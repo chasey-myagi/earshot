@@ -1,0 +1,23 @@
+node_modules/
+out/
+dist/
+release/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+*.local
+coverage/
+.vite/
+.earshot-dev/
+models/
+
+# Local recordings, profiles and signing material must stay outside source control.
+*.wav
+*.aiff
+*.pcm
+*.onnx
+*.p12
+*.pfx
+*.mobileprovision

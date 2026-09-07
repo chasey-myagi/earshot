@@ -1,0 +1,47 @@
+{
+  "name": "earshot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "macOS meeting recording and voice input. Local storage, direct DashScope BYOK.",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "electron-vite build",
+    "package": "node scripts/package-app.mjs",
+    "install:app": "node scripts/package-app.mjs --install",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "node --test src/main/*.test.mjs src/main/*/*.test.mjs src/renderer/*.test.mjs scripts/*.test.mjs",
+    "fetch:voiceprint": "node scripts/fetch-voiceprint-model.mjs",
+    "postinstall": "install-electron"
+  },
+  "dependencies": {
+    "koffi": "3.2.1",
+    "node-mac-permissions": "^2.5.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "sherpa-onnx-node": "^1.13.6"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "43.6.0",
+    "electron-vite": "^4.0.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.2"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chasey-myagi/earshot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chasey-myagi/earshot/issues"
+  }
+}

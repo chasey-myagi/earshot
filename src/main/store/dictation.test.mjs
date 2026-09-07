@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtempSync, readdirSync, statSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { createSessionStore } from './sessions.ts';
+test('dictation survives restart with original and final text, shares history without creating audio or people', t => {
+ const root=mkdtempSync(join(tmpdir(),'earshot-history-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const store=createSessionStore(root), id=randomUUID(), startedAt=Date.now();
+ const recording=store.createRecording();store.finalize(recording.id,'complete');
+ store.saveDictation({id,startedAt,durationSec:3,result:{text:'下午两点，不对，三点。',rawText:'下午两点，不对，三点。',asrModel:'qwen-audio-3.0-asr-flash-streaming'}});
+ store.renameSession({sessionId:id,title:'预约时间'});
+ store.saveDictation({id,startedAt,durationSec:3,result:{text:'下午三点。',rawText:'下午两点，不对，三点。',asrModel:'qwen-audio-3.0-asr-flash-streaming',polishModel:'qwen3.7-flash'}});
+ const reopened=createSessionStore(root), detail=reopened.getDetail(id);
+ assert.equal(reopened.listSummaries().length,2);assert.equal(detail.kind,'dictation');assert.equal(detail.title,'预约时间');
+ assert.equal(detail.dictation.text,'下午三点。');assert.equal(detail.dictation.rawText,'下午两点，不对，三点。');
+ assert.deepEqual(detail.people,[]);assert.equal(detail.turns[0].text,'下午三点。');assert.deepEqual(readdirSync(store.sessionDir(id)),['session.json']);
+ assert.equal(statSync(join(store.sessionDir(id),'session.json')).mode&0o777,0o600);
+ assert.equal(reopened.getDetail(recording.id).kind,undefined);assert.deepEqual(reopened.recoverOrphans(),[]);
+});
