@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { PROD_BUNDLE_ID, applyProdIdentity, writePackagedPayload, packageApp } from "./package-app.mjs";
+import { PROD_BUNDLE_ID, MIN_MACOS_VERSION, assertNativeMinimumOS, applyProdIdentity, writePackagedPayload, packageApp } from "./package-app.mjs";
 import { VOICEPRINT_MODEL } from "./fetch-voiceprint-model.mjs";
 
 test('packaging refuses missing koffi native binaries before building or replacing the existing app', () => {
@@ -37,6 +37,7 @@ test("applyProdIdentity uses a stable Applications identity", () => {
     assert.match(text, new RegExp(`<string>${PROD_BUNDLE_ID}</string>`));
     assert.match(text, /<string>Earshot<\/string>/);
     assert.match(text, /<string>Electron<\/string>/);
+    assert.match(text, new RegExp(`<key>LSMinimumSystemVersion</key>\\s*<string>${MIN_MACOS_VERSION.replaceAll(".", "\\.")}</string>`));
     assert.match(text, /NSScreenCaptureUsageDescription/);
     assert.match(text, /NSMicrophoneUsageDescription/);
     const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -144,4 +145,17 @@ test('packaging refuses missing permissions and speaker native payloads before r
     assert.throws(() => packageApp(root), /voiceprint model checksum mismatch/);
     assert.equal(readFileSync(join(root,'dist/Earshot.app/keep.txt'),'utf8'),'previous build');
   } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+
+test('packaging checks native deployment targets instead of assuming the Electron minimum', () => {
+  const reports = {
+    electron: 'cmd LC_BUILD_VERSION\n platform 1\n minos 12.0\n sdk 27.0',
+    permissions: 'cmd LC_VERSION_MIN_MACOSX\n cmdsize 16\n version 11.0\n sdk 26.5',
+    onnx: 'cmd LC_BUILD_VERSION\n platform 1\n minos 26.4\n sdk 26.5',
+  };
+  assert.doesNotThrow(() => assertNativeMinimumOS(Object.keys(reports), file => reports[file]));
+  assert.throws(() => assertNativeMinimumOS(['new-runtime'], () => 'cmd LC_BUILD_VERSION\n minos 26.5\n sdk 27.0'), /requires macOS 26.5, above declared 26.4/);
+  assert.throws(() => assertNativeMinimumOS(['patch-runtime'], () => 'cmd LC_BUILD_VERSION\n minos 26.4.1'), /requires macOS 26.4.1/);
+  assert.throws(() => assertNativeMinimumOS(['unknown-runtime'], () => 'not a Mach-O image'), /No macOS deployment target/);
 });

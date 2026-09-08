@@ -6,7 +6,7 @@ type SherpaExtractor = {
   createStream: () => {
     acceptWaveform: (wave: { sampleRate: number; samples: Float32Array }) => void;
   };
-  compute: (stream: unknown) => Float32Array | number[];
+  compute: (stream: unknown, enableExternalBuffer?: boolean) => Float32Array | number[];
 };
 
 type SherpaOnnx = {
@@ -36,7 +36,8 @@ export function extractEmbedding(opts: {
   });
   const stream = extractor.createStream();
   stream.acceptWaveform({ sampleRate: opts.sampleRate ?? 16000, samples: opts.samples });
-  const raw = extractor.compute(stream);
+  // Electron disallows external ArrayBuffers; request Sherpa-owned data copied into V8.
+  const raw = extractor.compute(stream, false);
   const embedding = raw instanceof Float32Array ? raw : new Float32Array(raw);
   if (embedding.length !== EMBEDDING_DIM) {
     throw new Error(`unexpected embedding dim ${embedding.length}`);

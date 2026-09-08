@@ -1,4 +1,4 @@
-import type { AppSnapshot, CapturePhase, PermissionState, PlaybackState, RealtimeStatus, SessionJobs, TranscriptTurn } from "../../shared/types";
+import type { AppSnapshot, CapturePhase, PermissionState, PlaybackState, RealtimeConnectionDetail, RealtimeStatus, SessionJobs, TranscriptTurn } from "../../shared/types";
 import type { SessionStore } from "./sessions";
 
 export type RecordingRuntime = {
@@ -7,6 +7,7 @@ export type RecordingRuntime = {
   stoppedAt?: string;
   glanceVisible: boolean;
   connection?: RealtimeStatus;
+  connectionDetail?: RealtimeConnectionDetail;
   storageWarning?: string;
   turns?: TranscriptTurn[];
 };
@@ -51,12 +52,13 @@ export function assembleSnapshot(store: SessionStore, runtime: SnapshotRuntime):
   const liveSummary = sessions.find(row => row.id === selectedId && row.id === runtime.recording?.sessionId);
   // Live text already comes from the recording buffer; avoid rereading an ever-growing JSONL file each frame.
   const selected = liveSummary && runtime.recording?.turns ? {
-    ...liveSummary, endedAt: null, turns: runtime.recording.turns, people: [],
+    ...liveSummary, ...store.readBookmarkState(liveSummary.id), endedAt: null, turns: runtime.recording.turns, people: [],
     durationSec: recordingDuration,
   } : selectedId ? store.getDetail(selectedId) : null;
   return {
     hasApiKey: runtime.hasApiKey,
     autoDiarize: store.readPrefs().autoDiarize,
+    sharedMicrophone: store.readPrefs().sharedMicrophone === true,
     permissions: runtime.permissions,
     playingSessionId: runtime.playingSessionId,
     playback: runtime.playback ? { ...runtime.playback,
@@ -69,6 +71,7 @@ export function assembleSnapshot(store: SessionStore, runtime: SnapshotRuntime):
           elapsedSec: recordingDuration,
           glanceVisible: runtime.recording.glanceVisible,
           connection: runtime.recording.connection ?? "connecting",
+          connectionDetail: runtime.recording.connectionDetail,
           storageWarning: runtime.recording.storageWarning,
           phase: runtime.capturePhase ?? "recording",
           turns: runtime.recording.turns ?? [],

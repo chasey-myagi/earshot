@@ -12,6 +12,7 @@ export type SessionDocument = {
   status: SessionStatus;
   /** Captured when recording starts; absent on legacy sessions. */
   autoDiarize?: boolean;
+  sharedMicrophone?: boolean;
   audio: { sampleRate: 16000; channels: 1; codec: "pcm_s16le" };
   tracks: { microphone: boolean; system: boolean };
   jobs: {
@@ -23,4 +24,5 @@ export type SessionDocument = {
 
 export type Prefs = {
   autoDiarize: boolean;
+  sharedMicrophone?: boolean;
 };

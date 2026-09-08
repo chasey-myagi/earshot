@@ -10,8 +10,9 @@ function parse(raw: unknown): ShortcutPrefs | null {
   if (!raw || typeof raw !== 'object') return null;
   const value = raw as ShortcutPrefs;
   if (typeof value.enabled !== 'boolean' || !normalizeShortcut(value.meeting) || !normalizeShortcut(value.dictation) || normalizeShortcut(value.meeting) === normalizeShortcut(value.dictation) || !['direct', 'preview'].includes(value.delivery)) return null;
+  if (value.wechatCompatibility !== undefined && typeof value.wechatCompatibility !== 'boolean') return null;
   if (value.models && (!DICTATION_MODELS.some(m => m.id === value.models?.asr) || !POLISH_MODELS.some(m => m.id === value.models?.polish))) return null;
-  return { enabled: value.enabled, meeting: normalizeShortcut(value.meeting)!, dictation: normalizeShortcut(value.dictation)!, delivery: value.delivery, ...(value.models ? { models: { ...value.models } } : {}) };
+  return { enabled: value.enabled, meeting: normalizeShortcut(value.meeting)!, dictation: normalizeShortcut(value.dictation)!, delivery: value.delivery, wechatCompatibility: value.wechatCompatibility === true, ...(value.models ? { models: { ...value.models } } : {}) };
 }
 
 export function createShortcutSettings(opts: {

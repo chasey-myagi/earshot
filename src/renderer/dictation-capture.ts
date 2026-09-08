@@ -1,5 +1,5 @@
 import { floatToS16le, resampleFloat } from '../shared/pcm';
-declare global { interface Window { dictationCapture: { ready: () => void; failed: () => void; pcm: (bytes: Uint8Array) => void } } }
+declare global { interface Window { dictationCapture: { onStart: (start: () => void) => void; failed: () => void; pcm: (bytes: Uint8Array) => void } } }
 
 const source = `class MicProcessor extends AudioWorkletProcessor {
   process(inputs) {
@@ -9,7 +9,7 @@ const source = `class MicProcessor extends AudioWorkletProcessor {
   }
 } registerProcessor('dictation-mic', MicProcessor);`;
 
-void (async () => {
+window.dictationCapture.onStart(() => { void (async () => {
   let stream: MediaStream | null = null, context: AudioContext | null = null;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
@@ -26,10 +26,9 @@ void (async () => {
     const mute = context.createGain(); mute.gain.value = 0;
     mic.connect(node); node.connect(mute); mute.connect(context.destination);
     stream.getAudioTracks()[0].onended = () => window.dictationCapture.failed();
-    window.dictationCapture.ready();
     window.addEventListener('pagehide', () => { stream?.getTracks().forEach(track => track.stop()); void context?.close(); }, { once: true });
   } catch {
     stream?.getTracks().forEach(track => track.stop()); void context?.close();
     window.dictationCapture.failed();
   }
-})();
+})(); });

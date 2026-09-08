@@ -1,7 +1,7 @@
 import type { PlaybackCommand, PlaybackReport, PlaybackStatus } from '../shared/types';
 
 type Media = Pick<HTMLAudioElement, 'src' | 'preload' | 'paused' | 'ended' | 'readyState' | 'duration' |
-  'currentTime' | 'seeking' | 'play' | 'pause' | 'load' | 'removeAttribute' | 'addEventListener' | 'removeEventListener'>;
+  'currentTime' | 'playbackRate' | 'preservesPitch' | 'seeking' | 'play' | 'pause' | 'load' | 'removeAttribute' | 'addEventListener' | 'removeEventListener'>;
 type Source = { media: Media; token: string; id: number; detach: () => void };
 
 /** Survives Library/settings changes; only a new source or host disposal removes audio. */
@@ -22,7 +22,7 @@ export function createMediaPlayback(options: {
   function publish(current: Source, ack = false, explicit?: PlaybackStatus) {
     if (source !== current) return;
     options.report({ token: current.token, commandId: current.id,
-      positionSec: position(current.media), status: explicit ?? status(current.media), ack });
+      positionSec: position(current.media), status: explicit ?? status(current.media), rate: current.media.playbackRate, ack });
   }
   function wait(media: Media, event: string, done: () => boolean, signal: AbortSignal) {
     if (signal.aborted) return Promise.reject(new Error('Playback command replaced'));
@@ -78,6 +78,13 @@ export function createMediaPlayback(options: {
         if (!current || source !== current || current.token !== command.token || !valid()) return;
         current.id = command.id;
         const media = current.media;
+        if (command.action === 'load' || command.action === 'rate') {
+          const rate = command.rate ?? 1;
+          if (![0.75, 1, 1.25, 1.5, 2].includes(rate)) throw new Error('Invalid playback rate');
+          media.preservesPitch = true;
+          media.playbackRate = rate;
+          if (media.playbackRate !== rate) throw new Error('Playback rate was not applied');
+        }
         if (command.action === 'pause') media.pause();
         if (command.action === 'load' || command.action === 'seek') {
           media.currentTime = Math.max(0, Math.min(command.positionSec ?? 0, media.duration));

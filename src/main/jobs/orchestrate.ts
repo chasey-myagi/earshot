@@ -7,6 +7,33 @@ export type JobMode = "all" | "refined" | "speakers";
 
 export type JobFailReasons = Map<string, { refined?: string; speakers?: string }>;
 
+const limits = new WeakMap<Set<string>, { active: number; waiting: (() => void)[] }>();
+
+function runBounded(key: Set<string>, signal: AbortSignal, work: () => Promise<void>, canceled: () => void): Promise<void> {
+  const limit = limits.get(key) ?? { active: 0, waiting: [] };
+  limits.set(key, limit);
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      const index = limit.waiting.indexOf(start);
+      if (index >= 0) limit.waiting.splice(index, 1);
+      try { canceled(); resolve(); } catch (err) { reject(err); }
+    };
+    const start = () => {
+      signal.removeEventListener("abort", abort);
+      if (signal.aborted) { abort(); return; }
+      limit.active++;
+      let task: Promise<void>;
+      try { task = work(); } catch (err) { task = Promise.reject(err); }
+      task.then(resolve, reject).finally(() => {
+        limit.active--;
+        limit.waiting.shift()?.();
+      });
+    };
+    if (limit.active < 2) start();
+    else { limit.waiting.push(start); signal.addEventListener("abort", abort, { once: true }); }
+  });
+}
+
 export type PostQueue = {
   store: SessionStore;
   jobsInFlight: Set<string>;
@@ -18,27 +45,42 @@ export type PostQueue = {
   onChange?: () => void;
 };
 
-export function queuePost(queue: PostQueue, sessionId: string, mode: JobMode): ActionResult {
+export function queuePost(queue: PostQueue, sessionId: string, mode: JobMode, retryUncertainSubmission = false): ActionResult {
   if (queue.jobsInFlight.has(sessionId)) return { ok: false, error: "正在处理" };
   if (!queue.apiKey) return { ok: false, error: "没有密钥不能开始", code: "no_key" };
-  if (!queue.store.readSession(sessionId)) return { ok: false, error: "找不到这场会" };
+  const doc = queue.store.readSession(sessionId);
+  if (!doc) return { ok: false, error: "找不到这场会" };
+  const wantSpeakers = mode === "speakers" || (doc.autoDiarize ?? queue.store.readPrefs().autoDiarize);
+  try {
+    queue.store.patchJobs(sessionId, {
+      refined: mode !== "speakers" ? { status: "running", reason: "等待处理" } : undefined,
+      speakers: wantSpeakers ? { status: "running", reason: "等待处理" } : undefined,
+    });
+  } catch { return { ok: false, error: "处理任务没能保存，请重试" }; }
   queue.jobsInFlight.add(sessionId);
   const ac = new AbortController();
   queue.jobAbort.set(sessionId, ac);
   queue.jobFailReasons.delete(sessionId);
   const run = queue.process ?? processSession;
-  const pending = run({
-    apiKey: queue.apiKey,
+  const apiKey = queue.apiKey;
+  const pending = runBounded(queue.jobsInFlight, ac.signal, () => run({
+    apiKey,
     store: queue.store,
     sessionId,
     mode,
     signal: ac.signal,
+    retryUncertainSubmission,
     onFail: (job, reason) => {
       const row = queue.jobFailReasons.get(sessionId) ?? {};
       row[job] = reason;
       queue.jobFailReasons.set(sessionId, row);
     },
     onChange: queue.onChange,
+  }), () => {
+    queue.store.patchJobs(sessionId, {
+      refined: mode !== "speakers" ? { status: "canceled", reason: null } : undefined,
+      speakers: wantSpeakers ? { status: "canceled", reason: null } : undefined,
+    });
   }).finally(() => {
     queue.jobsInFlight.delete(sessionId);
     queue.jobAbort.delete(sessionId);

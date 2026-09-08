@@ -19,6 +19,7 @@ import type {
   RenameSessionInput,
   RetryJobInput,
   RealtimeStatus,
+  RealtimeConnectionDetail,
   SaveKeyResult,
   Track,
 } from "../shared/types";
@@ -41,6 +42,7 @@ import { readStoredKey, writeStoredKey } from "./store/key";
 import { createLiveBuffer, persistLive } from "./live";
 import { createPlaybackController } from "./playback";
 import { createLiveTranscriber, type LiveTranscriber } from "./live-transcriber";
+import { createRealtimeEventWriter } from "./realtime-events";
 import { isSessionId, createSessionStore, type SessionStore } from "./store/sessions";
 import { assembleSnapshot } from "./store/snapshot";
 import { sessionHasWavBody } from "./store/wav";
@@ -54,6 +56,11 @@ import { createDictationRuntime } from "./dictation/runtime";
 import { createMacDictationBridge } from "./dictation/macos";
 import { createSessionDeletion } from "./session-deletion";
 import { createRecordingActions } from "./recording-actions";
+import { createMenubar } from "./menubar";
+import { configureHotwords, getHotwordStatus, saveHotwords, syncHotwords } from "./providers/hotwords";
+import { configureUsage, getUsageSummary } from "./providers/usage";
+import { importAudio, AUDIO_IMPORT_EXTENSIONS } from "./import-audio";
+import { decodeWithChromium } from "./import-audio-electron";
 
 const PRIVACY: Record<PrivacyPane, string> = {
   microphone: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
@@ -76,8 +83,14 @@ let capture: { stop: () => Promise<void> } | null = null;
 let quitting = false;
 let quitReady = false;
 let libraryRequest = 0;
+let settingsRequest = 0;
+let menubar: ReturnType<typeof createMenubar> | undefined;
+let audioImport: AppSnapshot['audioImport'];
+let importAbort: AbortController | undefined;
+let importPending: Promise<unknown> | undefined;
 let transcriber: LiveTranscriber | null = null;
 let realtimeStatus: RealtimeStatus = "connecting";
+let realtimeConnectionDetail: RealtimeConnectionDetail | undefined;
 let broadcastTimer: ReturnType<typeof setTimeout> | null = null;
 const liveBuf = createLiveBuffer();
 const playback = createPlaybackController({
@@ -121,16 +134,18 @@ function snapshot(): AppSnapshot {
           glanceVisible: glanceIsVisible(),
           turns: liveBuf.turns(),
           connection: realtimeStatus,
+          connectionDetail: realtimeConnectionDetail,
           storageWarning: live.storageWarning,
         }
       : null,
     selectedId,
     libraryRequest,
     jobFailReasons,
-  }), deletions: deletion?.snapshot() ?? [], dictation: dictation?.snapshot(), shortcuts: dictation?.status() };
+  }), audioImport, settingsRequest, deletions: deletion?.snapshot() ?? [], dictation: dictation?.snapshot(), shortcuts: dictation?.status() };
 }
 
 function broadcast(): void {
+  menubar?.update(recordingActions.phase(), Boolean(audioImport) || Boolean(dictation?.busy()), dictation?.status());
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send("earshot:changed");
   }
@@ -161,15 +176,17 @@ function startRealtime(apiKey: string, sessionId: string): void {
       apiKey,
       onSentence: (track, sentence) => {
         if (!live || live.sessionId !== sessionId) return;
-        const committed = liveBuf.apply(track, sentence);
+        const committed = liveBuf.apply(track, sentence, store.readSession(sessionId)?.sharedMicrophone);
         if (committed) persistLive(store.sessionDir(sessionId), committed);
         broadcastSoon();
       },
-      onStatus: (status) => {
+      onEvent: createRealtimeEventWriter(store.sessionDir(sessionId)),
+      onTrackLost: track => { if (live?.sessionId === sessionId) liveBuf.clearPartials(track); },
+      onStatus: (status, detail) => {
         if (!live || live.sessionId !== sessionId) return;
         realtimeStatus = status;
-        if (status === "disconnected") liveBuf.clearPartials();
-        if (status === "connected" || status === "disconnected") {
+        realtimeConnectionDetail = detail;
+        if (status === "connected" || status === "disconnected" || status === "reconnecting") {
           live.pendingLiveStatus = status === "connected" ? "running" : "failed";
           try { saveLiveStatus(live); }
           catch { live.storageWarning = "连接状态暂未保存。录音仍在继续，停止时可重试保存。"; }
@@ -191,9 +208,9 @@ function postQueue() {
   };
 }
 
-function enqueuePost(sessionId: string, mode: "all" | "refined" | "speakers"): ActionResult {
+function enqueuePost(sessionId: string, mode: "all" | "refined" | "speakers", userRetry = false): ActionResult {
   if (deletion?.blocked(sessionId)) return { ok: false, error: "会话正在删除" };
-  const result = queuePost(postQueue(), sessionId, mode);
+  const result = queuePost(postQueue(), sessionId, mode, userRetry);
   if (result.ok) speakerNames.invalidate(sessionId);
   return result;
 }
@@ -325,6 +342,7 @@ async function onCaptureCrash(): Promise<void> {
 }
 
 async function startRecording(): Promise<ActionResult> {
+  if (quitting || audioImport) return { ok: false, error: "请先完成音频导入", code: "busy" };
   if (dictation?.busy()) return { ok: false, error: "请先结束语音输入", code: "busy" };
   if (dictation && dictation.snapshot().phase !== "idle") await dictation.cancel();
   const apiKey = readApiKey();
@@ -378,6 +396,64 @@ const recordingActions = createRecordingActions({
 
 function registerIpc(): void {
   ipcMain.handle("app:snapshot", (): AppSnapshot => snapshot());
+
+  ipcMain.handle("app:searchTranscripts", (_event, raw: unknown) => store.searchTranscripts(raw));
+  for (const action of ['correctTurn', 'undoTurnCorrection', 'resetTurnCorrection', 'addBookmark', 'deleteBookmark'] as const) {
+    ipcMain.handle(`app:${action}`, (_event, raw: unknown): ActionResult => {
+      const id = raw && typeof raw === 'object' ? (raw as { sessionId?: unknown }).sessionId : undefined;
+      if (!isSessionId(id)) return { ok: false, error: '找不到这场会' };
+      if (deletion.blocked(id)) return { ok: false, error: '会话正在删除' };
+      if (id === live?.sessionId && action !== 'addBookmark' && action !== 'deleteBookmark') return { ok: false, error: '停止录音并保存后即可修改' };
+      const result = store[action](raw);
+      if (result.ok) broadcast();
+      return result;
+    });
+  }
+  ipcMain.handle('app:hotwordStatus', () => getHotwordStatus());
+  ipcMain.handle('app:saveHotwords', async (_event, raw: unknown) => { const result = await saveHotwords(raw); broadcast(); return result; });
+  ipcMain.handle('app:syncHotwords', async () => { const result = await syncHotwords(); broadcast(); return result; });
+  ipcMain.handle('app:usageSummary', (_event, period: unknown) => getUsageSummary(period === 'today' || period === 'all' ? period : 'month'));
+  ipcMain.handle('app:openBilling', async () => { await shell.openExternal('https://usercenter2.aliyun.com/finance/'); });
+  ipcMain.handle('app:importAudio', (event) => {
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    if (!parent || parent !== library || parent.isDestroyed()) return { ok: false, error: '请在会话窗口中导入音频' };
+    if (quitting || audioImport || recordingActions.phase() !== 'idle' || dictation?.busy()) return { ok: false, error: '请先完成当前录音、语音输入或导入', code: 'busy' };
+    const controller = new AbortController();
+    importAbort = controller;
+    audioImport = { phase: 'choosing', message: '选择要导入的音频' }; broadcast();
+    const pending = (async () => {
+      try {
+        const picked = await dialog.showOpenDialog(parent, { title: '导入音频', buttonLabel: '导入', properties: ['openFile'], filters: [{ name: '音频', extensions: [...AUDIO_IMPORT_EXTENSIONS] }] });
+        if (picked.canceled || controller.signal.aborted || !picked.filePaths[0]) return { ok: true as const, canceled: true };
+        const result = await importAudio({
+          sourcePath: picked.filePaths[0], sessionsRoot: join(store.rootDir, 'sessions'), decode: decodeWithChromium, signal: controller.signal,
+          onProgress: progress => {
+            audioImport = { phase: progress.phase === 'saving' ? 'saving' : 'decoding', percent: progress.percent,
+              message: progress.phase === 'copying' ? '正在复制音频' : progress.phase === 'decoding' ? '正在解码音频' : '正在保存会话' };
+            broadcastSoon();
+          },
+          commit: result => {
+            const now = new Date().toISOString();
+            store.writeSession({ schema_version: 1, id: result.id, title: result.title, startedAt: now, endedAt: now,
+              durationSec: result.durationSec, status: 'complete', autoDiarize: store.readPrefs().autoDiarize,
+              audio: { sampleRate: 16000, channels: 1, codec: 'pcm_s16le' }, tracks: { microphone: false, system: true },
+              jobs: { live: 'idle', refined: { status: 'idle', current: null }, speakers: { status: 'idle', current: null } } });
+          },
+        });
+        selectedId = result.id;
+        if (readApiKey()) enqueuePost(result.id, 'all');
+        else store.patchJobs(result.id, { refined: { status: 'failed', reason: '音频已保存；请先设置百炼 API 密钥，再重试转写' } });
+        return { ok: true as const, sessionId: result.id };
+      } catch (error) {
+        return controller.signal.aborted ? { ok: true as const, canceled: true } : { ok: false as const, error: error instanceof Error ? error.message : '音频导入失败，请重试' };
+      } finally {
+        audioImport = undefined; importAbort = undefined; importPending = undefined; broadcast();
+      }
+    })();
+    importPending = pending;
+    return pending;
+  });
+  ipcMain.handle('app:cancelAudioImport', () => { importAbort?.abort(); });
 
   ipcMain.handle("app:renameSession", (_event, raw: unknown): ActionResult => {
     if (raw && typeof raw === "object" && (raw as RenameSessionInput).sessionId === live?.sessionId) {
@@ -463,6 +539,7 @@ function registerIpc(): void {
     } catch (err) {
       return { ok: false, error: "密钥没保存，请检查磁盘空间后重试" };
     }
+    void syncHotwords().then(broadcast).catch(() => broadcast());
     broadcast();
     return { ok: true };
   });
@@ -519,6 +596,11 @@ function registerIpc(): void {
     store.setAutoDiarize(on);
     broadcast();
   });
+  ipcMain.handle("app:setSharedMicrophone", (_event, on: unknown): void => {
+    if (typeof on !== "boolean") return;
+    store.setSharedMicrophone(on);
+    broadcast();
+  });
 
   ipcMain.handle("app:renameSpeaker", (_event, raw: unknown): RenameSpeakerResult => {
     if (!raw || typeof raw !== "object") return { ok: false, error: "改不了这个名字" };
@@ -546,7 +628,7 @@ function registerIpc(): void {
     if (!isSessionId(input.sessionId) || (input.job !== "refined" && input.job !== "speakers")) {
       return { ok: false, error: "重试不了" };
     }
-    return enqueuePost(input.sessionId, input.job);
+    return enqueuePost(input.sessionId, input.job, true);
   });
 
   ipcMain.handle("app:cancelJob", (_event, id: unknown): ActionResult => {
@@ -598,6 +680,7 @@ function registerIpc(): void {
     if (id !== undefined && typeof id !== "string") return { ok: false, error: "无效的回听会话" };
     return playback.pause(id);
   });
+  ipcMain.handle('app:setPlaybackRate', (_event, rate: unknown): ActionResult | Promise<ActionResult> => playbackBlocked() ?? (typeof rate === 'number' ? playback.setRate(rate) : { ok: false, error: '无效的播放速度' }));
   ipcMain.handle("app:resumePlayback", (): ActionResult | Promise<ActionResult> => playbackBlocked() ?? playback.resume());
   ipcMain.handle("app:seekPlayback", (_event, raw: unknown): ActionResult | Promise<ActionResult> => {
     const blocked = playbackBlocked(); if (blocked) return blocked;
@@ -629,7 +712,9 @@ app.whenReady().then(async () => {
     app.dock?.setIcon(join(process.resourcesPath, "earshot-icon.png"));
     mkdirSync(join(supportDir(), "sessions"), { recursive: true });
     store = createSessionStore(supportDir());
-    speakerNames = createSpeakerNames({ store });
+    configureHotwords(join(supportDir(), 'hotwords.json'), readApiKey);
+    configureUsage(join(supportDir(), 'usage.json'));
+    speakerNames = createSpeakerNames({ store, onChange: broadcast });
     deletion = createSessionDeletion({
       store,
       active: id => live?.sessionId === id,
@@ -655,7 +740,7 @@ app.whenReady().then(async () => {
     dictation = createDictationRuntime({
       bridge: createMacDictationBridge(),
       store, root: supportDir(), apiKey: readApiKey,
-      meetingBusy: () => recordingActions.phase() !== 'idle',
+      meetingBusy: () => recordingActions.phase() !== 'idle' || Boolean(audioImport) || quitting,
       startMeeting: () => recordingActions.start(),
       showMeeting: () => { navigation.openLibrary(); broadcast(); },
       stopPlayback: () => playback.stopAndWait(), changed: broadcast,
@@ -663,6 +748,14 @@ app.whenReady().then(async () => {
     registerIpc();
     dictation.register();
     library = openLibrary();
+    menubar = createMenubar({
+      open: () => { navigation.openLibrary(); broadcast(); },
+      settings: () => { settingsRequest += 1; navigation.openLibrary(); broadcast(); },
+      start: () => { void recordingActions.start().then(result => { if (!result.ok) { navigation.openLibrary(); dialog.showErrorBox('录音未开始', result.error); } }); },
+      stop: () => { void recordingActions.stop('stop').then(result => { if (!result.ok) { navigation.openLibrary(); dialog.showErrorBox('录音尚未保存', result.error); } }); },
+      quit: () => app.quit(),
+    });
+    if (getHotwordStatus().words.length && readApiKey()) void syncHotwords().then(broadcast).catch(() => broadcast());
     console.log("[earshot] library window");
     await refreshPermissions();
     recoverStuckJobs(postQueue());
@@ -687,16 +780,22 @@ app.on("before-quit", (event) => {
   if (quitting) { event.preventDefault(); return; }
   quitting = true;
   speakerNames?.close();
-  if (recordingActions.phase() === "idle") { deletion?.close(); dictation?.close(); quitReady = true; void playback.stopAndWait().catch(() => {}); return; }
+  importAbort?.abort();
   event.preventDefault();
-  void recordingActions.stop("quit").then(result => {
+  void Promise.all([recordingActions.stop("quit"), importPending]).then(async ([result]) => {
     if (!result.ok && recordingActions.phase() !== "idle") {
       quitting = false;
       navigation.openLibrary();
       dialog.showErrorBox("录音尚未保存完成", "无法完成收尾，请检查存储空间后重新停止录制。Earshot 将保持打开。");
       return;
     }
-    deletion?.close(); dictation?.close();
+    try { await dictation?.close(); await playback.stopAndWait(); }
+    catch {
+      quitting = false;
+      dialog.showErrorBox("收尾尚未完成", "剪贴板或播放仍在收尾。Earshot 将保持打开，请稍后再退出。");
+      return;
+    }
+    menubar?.close(); deletion?.close();
     quitReady = true;
     app.quit();
   });

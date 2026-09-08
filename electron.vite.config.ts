@@ -23,6 +23,7 @@ export default defineConfig({
         input: {
           index: resolve("src/main/index.ts"),
           "voiceprint-worker": resolve("src/main/voiceprint/worker.ts"),
+          "dictation-pasteboard-worker": resolve("src/main/dictation/pasteboard-worker.ts"),
         },
         external: ["sherpa-onnx-node", "node-mac-permissions", "koffi"],
       },

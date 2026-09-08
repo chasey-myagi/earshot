@@ -8,6 +8,7 @@ import { APP_ICON_FILE, installAppIcon } from "./app-icon.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const APP_VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
+export const MIN_MACOS_VERSION = "26.4";
 export const PROD_BUNDLE_ID = "app.earshot";
 export const APPLICATIONS_APP = "/Applications/Earshot.app";
 
@@ -29,6 +30,7 @@ export function applyProdIdentity(plist, version = APP_VERSION) {
   setPlistString(plist, "CFBundleShortVersionString", version);
   setPlistString(plist, "CFBundleVersion", version);
   setPlistString(plist, "CFBundleIdentifier", PROD_BUNDLE_ID);
+  setPlistString(plist, "LSMinimumSystemVersion", MIN_MACOS_VERSION);
   setPlistString(plist, "CFBundleName", "Earshot");
   setPlistString(plist, "CFBundleDisplayName", "Earshot");
   setPlistString(plist, "CFBundleIconFile", APP_ICON_FILE);
@@ -75,6 +77,13 @@ export function packageApp(root = ROOT) {
   }
   const model = join(root, "models", VOICEPRINT_MODEL);
   if (existsSync(model)) verifyVoiceprintModel(model);
+  assertNativeMinimumOS([
+    join(src, "Contents/MacOS/Electron"),
+    join(root, "node_modules/node-mac-permissions/build/Release/permissions.node"),
+    join(root, `node_modules/@koromix/koffi-darwin-${process.arch}/darwin_${process.arch}/koffi.node`),
+    ...["sherpa-onnx.node", "libsherpa-onnx-c-api.dylib", "libsherpa-onnx-cxx-api.dylib", "libonnxruntime.dylib"]
+      .map(name => join(root, `node_modules/sherpa-onnx-darwin-${process.arch}`, name)),
+  ]);
   run("npx", ["--no-install", "electron-vite", "build"], root);
   const dest = packagedAppPath(root);
   rmSync(dest, { recursive: true, force: true });
@@ -85,6 +94,28 @@ export function packageApp(root = ROOT) {
   run("xattr", ["-cr", dest]);
   run("codesign", ["--force", "--deep", "--sign", signingIdentity(), dest]);
   return dest;
+}
+
+/** Reject a native dependency whose deployment target exceeds the advertised OS. */
+export function assertNativeMinimumOS(files, inspect = file => {
+  const result = spawnSync("otool", ["-l", file], { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`Cannot inspect native deployment target: ${file}`);
+  return result.stdout;
+}) {
+  const supported = MIN_MACOS_VERSION.split(".").map(Number);
+  for (const file of files) {
+    const output = inspect(file);
+    const versions = [...output.matchAll(/\bminos\s+([0-9.]+)/g),
+      ...output.matchAll(/cmd LC_VERSION_MIN_MACOSX\s+cmdsize \d+\s+version ([0-9.]+)/g)]
+      .map(match => match[1]);
+    if (!versions.length) throw new Error(`No macOS deployment target found: ${file}`);
+    for (const version of versions) {
+      const parts = version.split(".").map(Number);
+      const firstDifference = Array.from({ length: Math.max(parts.length, supported.length) },
+        (_, index) => (parts[index] ?? 0) - (supported[index] ?? 0)).find(value => value !== 0) ?? 0;
+      if (firstDifference > 0) throw new Error(`${file} requires macOS ${version}, above declared ${MIN_MACOS_VERSION}`);
+    }
+  }
 }
 
 export function installApp(root = ROOT) {
@@ -143,6 +174,7 @@ export function copyVoiceprintPayload(appPath, root = ROOT) {
     mkdirSync(modulesDest, { recursive: true });
     run("ditto", [src, join(modulesDest, name)]);
   }
+  rmSync(join(modulesDest, "node-mac-permissions/build/Release/obj.target"), { recursive: true, force: true });
   const modelSrc = join(root, "models", VOICEPRINT_MODEL);
   if (!existsSync(modelSrc)) return;
   verifyVoiceprintModel(modelSrc);

@@ -1,0 +1,47 @@
+.transcript-search { margin: 0 0 12px; min-width: 0; }
+.transcript-search-field { display: flex; align-items: center; gap: 6px; }
+.transcript-search input, .transcript-editor input, .transcript-editor textarea, .bookmark-add input {
+  min-width: 0; width: 100%; padding: 9px 10px; border: 1px solid var(--line, #6f7384); border-radius: 8px;
+  background: var(--canvas); color: var(--text); font: inherit;
+}
+.transcript-search input { font-size: 12px; }
+.transcript-search-results { max-height: min(55vh, 520px); overflow-y: auto; }
+.transcript-search ul, .transcript-bookmarks ul { list-style: none; padding: 0; margin: 0; }
+.search-hit { width: 100%; text-align: left; display: grid; gap: 5px; padding: 10px 6px; border: 0; border-bottom: 1px solid var(--line, #6f7384); color: var(--text); background: transparent; cursor: pointer; overflow-wrap: anywhere; }
+.search-hit:hover { background: var(--layer); }
+.search-hit strong { font-size: 13px; font-weight: 600; }
+.search-hit-meta { font-size: 11px; color: var(--muted); }
+.search-hit-snippet { font-size: 12px; line-height: 1.55; }
+.tool-hint { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 8px 0; }
+.tool-text-button { color: var(--text); background: transparent; border: 0; border-radius: 5px; padding: 4px 6px; font: inherit; font-size: 12px; cursor: pointer; flex-shrink: 0; }
+.tool-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.tool-heading strong { font-size: 13px; }
+.transcript-editor { border: 1px solid var(--line, #6f7384); border-radius: 10px; background: var(--layer); padding: 16px; display: grid; gap: 8px; margin: 8px 0 18px; }
+.transcript-editor label { font-size: 12px; font-weight: 600; }
+.transcript-editor textarea { resize: vertical; line-height: 1.65; min-height: 100px; }
+.tool-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.tool-actions > button, .bookmark-add > button { border: 1px solid var(--line, #6f7384); border-radius: 7px; padding: 7px 10px; color: var(--text); background: var(--canvas); font: inherit; font-size: 12px; cursor: pointer; }
+.tool-actions > .tool-primary { margin-left: auto; background: var(--accent, #7566d4); color: #fff; border-color: transparent; }
+.tool-error { color: var(--danger, #de6576); font-size: 12px; line-height: 1.6; margin: 4px 0; }
+.transcript-original { color: var(--muted); font-size: 12px; }
+.transcript-original summary { cursor: pointer; padding: 4px 0; }
+.transcript-original p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.transcript-bookmarks { border-top: 1px solid var(--line, #6f7384); padding: 12px 0; margin: 12px 0; }
+.bookmark-add { display: flex; align-items: center; gap: 8px; }
+.bookmark-add > button { white-space: nowrap; }
+.transcript-bookmarks li { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line, #6f7384); }
+.bookmark-seek { flex: 1; min-width: 0; display: flex; gap: 12px; text-align: left; padding: 9px 0; color: var(--text); background: transparent; border: 0; cursor: pointer; font: inherit; font-size: 13px; }
+.bookmark-seek time { font-variant-numeric: tabular-nums; color: var(--muted); }
+.bookmark-seek span { overflow-wrap: anywhere; }
+.transcript-editor button:disabled, .transcript-bookmarks button:disabled { opacity: .5; cursor: default; }
+.transcript-search :focus-visible, .transcript-editor :focus-visible, .transcript-bookmarks :focus-visible { outline: 2px solid var(--accent, #9989f2); outline-offset: 2px; }
+.transcript-bookmarks .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.slist > .transcript-search { padding: 14px 12px 0; margin-bottom: 4px; flex-shrink: 0; }
+.turn-edit-button { margin-left: auto; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; padding: 3px 5px; cursor: pointer; }
+.turn-edit-button:hover, .turn-edit-button[aria-expanded="true"] { color: var(--accent-hi); background: var(--accent-lo); }
+.bookmark-strip { margin: 0 0 14px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+.bookmark-strip > summary { color: var(--muted); font-size: 12px; cursor: pointer; padding: 6px 0; }
+.bookmark-strip .transcript-bookmarks { margin: 0; padding: 8px 0; border: 0; }
+.audio-import-progress { display: flex; align-items: center; gap: 12px; padding: 6px 20px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.audio-import-progress progress { flex: 1; max-width: 240px; accent-color: var(--accent); }
+.audio-import-progress .btn { margin-left: auto; }

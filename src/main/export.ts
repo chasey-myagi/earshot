@@ -34,7 +34,7 @@ function document(detail: SessionDetail) {
     turns: detail.turns.filter((turn) => !turn.partial && turn.text.trim()).map((turn) => ({
       id: turn.id,
       track: turn.track,
-      speaker: turn.track === "you" ? "你" : turn.speaker || "对方",
+      speaker: turn.correction?.speakerOverridden ? turn.speaker : turn.track === "you" ? "你" : turn.speaker || "对方",
       tStartMs: turn.tStartMs,
       ...(turn.tEndMs === undefined ? {} : { tEndMs: turn.tEndMs }),
       text: turn.text,

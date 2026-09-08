@@ -114,6 +114,7 @@ async function failureThenRetry(t, failureMessage) {
 
   // External service boundary only: provider, processing, persistence and snapshot are real.
   let cloudFailure = failureMessage;
+  let submissions = 0;
   t.mock.method(globalThis, "fetch", async (input, init) => {
     const url = new URL(String(input));
     if (url.pathname === "/api/v1/uploads") {
@@ -125,6 +126,7 @@ async function failureThenRetry(t, failureMessage) {
       return new Response("");
     }
     if (url.pathname === "/api/v1/services/audio/asr/transcription") {
+      submissions++;
       return Response.json({ output: { task_id: "test-task" } });
     }
     if (url.pathname === "/api/v1/tasks/test-task") {
@@ -156,6 +158,10 @@ async function failureThenRetry(t, failureMessage) {
 
   cloudFailure = null;
   await processSession({ store: reopened, sessionId: id, apiKey: "sk-test", mode: "all" });
+  assert.equal(submissions, 1, "automatic restoration cannot repeat a failed paid task");
+  assert.equal(reopened.readSession(id).jobs.refined.status, "failed");
+  await processSession({ store: reopened, sessionId: id, apiKey: "sk-test", mode: "all", retryUncertainSubmission: true });
+  assert.equal(submissions, 2, "a deliberate retry submits exactly once");
   const recovered = assembleSnapshot(createSessionStore(root), runtime);
   assert.equal(recovered.selected.jobs.refined, "done");
   assert.equal(recovered.selected.jobs.speakers, "done");

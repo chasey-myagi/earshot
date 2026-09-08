@@ -54,10 +54,25 @@ export function RealtimeNotice({ recording, compact = false }: { recording: Reco
     connecting: "实时转写连接中",
     connected: "实时转写正常",
     disconnected: compact ? "转写已断开，录音继续" : "实时转写已断开，原始录音仍在保存",
-    reconnecting: "重连中，录音继续",
+    reconnecting: compact ? "转写重连中，录音继续" : "实时转写正在自动重连，原始录音仍在保存",
   }[connection];
+  const reason = { transport: "网络连接中断", "ready-timeout": "连接超时", "provider-timeout": "转写服务超时",
+    server: "转写服务暂时不可用", "rate-limit": "转写服务请求过于频繁", auth: "密钥无效或没有访问权限",
+    quota: "账户余额或额度不足", "invalid-request": "转写设置不受支持", provider: "转写服务拒绝请求", "task-finished": "转写任务意外结束" };
+  const explanation = connection === "connected" ? "" : Object.entries(recording.connectionDetail?.tracks ?? {}).map(([track, info]) => {
+    const name = track === "you" ? "麦克风" : "系统声音";
+    if (info.status === "connected") return `${name}：已连接`;
+    if (info.status === "connecting") return `${name}：连接中`;
+    const cause = info.category ? reason[info.category] : "连接中断";
+    if (info.status === "reconnecting") {
+      const interval = info.retryDelayMs !== undefined && info.retryDelayMs > 0 ? `，重试间隔 ${info.retryDelayMs / 1000} 秒` : "";
+      return `${name}：${cause}，正在自动重试${interval}`;
+    }
+    return `${name}：${cause}${info.attempt >= 5 ? "，自动重连已达上限" : ""}`;
+  }).join("；");
   return <div className={`realtime-notice${disconnected ? " disconnected" : ""}${compact ? " compact" : ""}`}>
     <span role="status">{label}</span>
+    {explanation ? <span role="status">{explanation}</span> : null}
     {recording.storageWarning ? <span role="status">{recording.storageWarning}</span> : null}
     {disconnected ? <button type="button" className="btn text"
       disabled={busy || (recording.phase !== undefined && recording.phase !== "recording")}

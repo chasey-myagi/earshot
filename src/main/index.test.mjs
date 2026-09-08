@@ -1,3 +1,4 @@
+import { trayFixture } from "../../scripts/electron-tray-fixture.mjs";
 import { sourceLoader } from "../../scripts/test-source-loader.mjs";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
@@ -38,6 +39,7 @@ async function launch(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), "earshot-main-ipc-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const handlers = new Map(), events = new Map(), windows = [];
+  const tray = trayFixture();
   const calls = { starts: 0, stops: 0, plays: 0, settled: [], queued: [], quits: 0, errors: [], mediaCommands: [], revealed: [] };
   let ready;
   let store;
@@ -72,10 +74,11 @@ async function launch(t, overrides = {}) {
     quit() { calls.quits++; events.get("before-quit")?.({ preventDefault() {} }); },
   };
   const modules = {
-    electron: { protocol: { registerSchemesAsPrivileged() {}, handle() {} }, app, BrowserWindow: Window, dialog: { showErrorBox: (...args) => calls.errors.push(args), showSaveDialog: (...args) => overrides.save?.(...args) }, shell: { showItemInFolder: path => calls.revealed.push(path) },
+    electron: { ...tray, protocol: { registerSchemesAsPrivileged() {}, handle() {} }, app, BrowserWindow: Window, dialog: { showErrorBox: (...args) => calls.errors.push(args), showSaveDialog: (...args) => overrides.save?.(...args), showOpenDialog: (...args) => overrides.pick?.(...args) }, shell: { showItemInFolder: path => calls.revealed.push(path) },
       ipcMain: { handle: (name, handler) => handlers.set(name, handler), on: (name, handler) => handlers.set(name, handler) },
       globalShortcut: { register: () => true, unregister() {} }, powerMonitor: { on() {}, removeListener() {} },
       systemPreferences: { getMediaAccessStatus: () => "granted", isTrustedAccessibilityClient: () => false } },
+    "./import-audio-electron": { decodeWithChromium: (...args) => overrides.decode?.(...args) },
     "./capture/permissions": permissions,
     "./capture/screen-status": screenStatus,
     "./capture/screen": { installScreenPicker() {}, probeScreenPermission: () => "granted" },
@@ -98,7 +101,7 @@ async function launch(t, overrides = {}) {
         ...queue, process: async () => { calls.queued.push(id); },
       }, id, reason),
     },
-    "./store/key": { readStoredKey: () => "fixture-only-not-a-key" },
+    "./store/key": { readStoredKey: () => Object.hasOwn(overrides, "key") ? overrides.key : "fixture-only-not-a-key" },
     "./live": live,
     "./playback": overrides.realPlayback ? { createPlaybackController: options => playbackModule.createPlaybackController({ ...options, timeoutMs: overrides.mediaTimeout ?? 1000 }) } : {
       createPlaybackController: () => ({
@@ -117,16 +120,17 @@ async function launch(t, overrides = {}) {
     "./windows/glance": { createGlanceWindow: () => new Window() },
     "./windows/library": { createLibraryWindow: () => new Window() },
     "./windows/load": { loadRenderer() {} },
+    "./windows/dictation": { createDictationWindow: () => ({ prepare() {}, show() {}, close() {} }) },
     "./windows/navigation": navigation,
     "./recording-actions": recordingActions,
   };
-  const loadSource = sourceLoader(fileURLToPath(new URL("./index.ts", import.meta.url)), { ...modules, "./dictation/macos": { createMacDictationBridge: () => undefined } });
+  const loadSource = sourceLoader(fileURLToPath(new URL("./index.ts", import.meta.url)), { ...modules, "./dictation/macos": { createMacDictationBridge: () => overrides.bridge }, "./capture/dictation": { prepareDictationCapture() {}, closePreparedDictationCapture() {}, startDictationCapture() { throw new Error("Dictation capture is outside this meeting/playback scenario"); } } });
   runInNewContext(compiled, {
     exports: {}, require: name => name.startsWith("node:") ? require(name) : modules[name] ?? loadSource(name),
-    console: { log() {}, error() {} }, process, setTimeout, clearTimeout,
+    console: { log() {}, error() {} }, process, AbortController, setTimeout, clearTimeout,
   });
   await ready;
-  return { store, calls, windows, events,
+  return { store, calls, windows, events, root, trays: tray.trays,
     mediaReady: (sender = windows[0].webContents) => handlers.get("app:playbackHost")({ sender }, true),
     mediaReport: (report, sender = windows[0].webContents) => handlers.get("app:playbackReport")({ sender }, report),
     crash: () => captureOptions.onCrash(),
@@ -236,7 +240,7 @@ test("repeated quit requests wait for pending startup and finalization", async t
   requestQuit(); requestQuit();
   assert.equal(prevented, 2);
   start.resolve(); await starting;
-  for (let i = 0; i < 12; i++) await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.calls.starts, 1); assert.equal(h.calls.stops, 1);
   assert.equal(h.calls.quits, 1);
 });
@@ -246,11 +250,12 @@ function socketServer() {
   const sockets = [];
   return { sockets, connect: () => {
     const callbacks = {};
-    const socket = { send() {}, close() {},
+    const socket = { closed: false, send() {}, close() { this.closed = true; },
       onOpen(fn) { callbacks.open = fn; }, onMessage(fn) { callbacks.message = fn; },
       onError(fn) { callbacks.error = fn; }, onClose(fn) { callbacks.close = fn; },
       ready() { callbacks.message(JSON.stringify({ header: { event: "task-started" } })); },
       lose() { callbacks.close(); },
+      deny() { callbacks.message(JSON.stringify({ header: { event: "task-failed", error_code: "InvalidApiKey" } })); },
       sentence(text, partial = false, start = 0, sentenceId = 1) { callbacks.message(JSON.stringify({
         header: { event: "result-generated" }, payload: { output: { sentence: {
           sentence_id: sentenceId, text, begin_time: start, sentence_end: !partial,
@@ -277,7 +282,7 @@ for (const stoppingFirst of [false, true]) test(`quit remains blocked throughout
   assert.equal(h.store.readSession(id).status, "recording");
   stop.resolve();
   if (pending) await pending;
-  for (let i = 0; i < 20; i++) await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.store.readSession(id).status, "complete");
   assert.equal(readFileSync(join(h.store.sessionDir(id), "mic.wav")).readUInt32LE(40), 32000);
   assert.equal(h.calls.queued.length, 0, "a quit arriving during manual stop must not start cloud jobs");
@@ -316,7 +321,7 @@ for (const captureFails of [false, true]) test(`real finalization failure remain
   }
 });
 
-test("actual reconnect IPC clears drafts, preserves WAV and confirmed disk transcript, and rejects late generations", async t => {
+test("actual manual reconnect IPC clears only failed-track drafts, preserves WAV and confirmed disk transcript, and rejects late generations", async t => {
   const start = deferred(), stop = deferred(), server = socketServer();
   const h = await launch(t, { connect: server.connect, start: () => start.promise, stop: () => stop.promise });
   assert.equal(h.invoke("retryRealtime").ok, false);
@@ -333,31 +338,36 @@ test("actual reconnect IPC clears drafts, preserves WAV and confirmed disk trans
   server.sockets[0].sentence("you draft", true, 1000, 2);
   server.sockets[1].sentence("other draft", true);
   assert.equal(h.snap().recording.turns.filter(row => row.partial).length, 2);
-  server.sockets[0].lose();
+  server.sockets[0].deny();
   assert.equal(h.snap().recording.connection, "disconnected");
   assert.equal(h.store.readSession(id).jobs.live, "failed");
-  assert.deepEqual(Array.from(h.snap().recording.turns, row => row.text), ["confirmed before loss"]);
+  assert.deepEqual(Array.from(h.snap().recording.turns.filter(row => !row.partial), row => row.text), ["confirmed before loss"]);
+  assert.equal(h.snap().recording.turns.find(row => row.partial)?.track, "other");
+  assert.equal(server.sockets[1].closed, false);
+  assert.equal(h.snap().recording.connectionDetail.tracks.you.category, "auth");
   h.pcm("you", Buffer.alloc(32000 * 5, 2));
   h.pcm("other", Buffer.alloc(32000 * 6, 3));
   assert.equal(h.invoke("retryRealtime").ok, true);
   assert.equal(h.snap().recording.connection, "reconnecting");
   server.sockets[2].ready();
-  assert.equal(h.snap().recording.connection, "reconnecting");
-  server.sockets[3].ready();
+
   assert.equal(h.snap().recording.connection, "connected");
   assert.equal(h.store.readSession(id).jobs.live, "running");
   h.pcm("you", Buffer.alloc(3200, 1));
   server.sockets[2].sentence("confirmed after loss");
   server.sockets[0].sentence("late old connection");
   server.sockets[0].lose();
-  const turns = h.snap().recording.turns;
+  const turns = h.snap().recording.turns.filter(row => !row.partial);
   assert.deepEqual(Array.from(turns, row => row.text), ["confirmed before loss", "confirmed after loss"]);
   assert.equal(turns[1].tStartMs, 6000);
   const persisted = readFileSync(join(h.store.sessionDir(id), "live.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
   assert.deepEqual(persisted.map(row => row.text), ["confirmed before loss", "confirmed after loss"]);
+  const diagnostic = JSON.parse(readFileSync(join(h.store.sessionDir(id), "realtime-events.json"), "utf8"));
+  assert.equal(diagnostic.events.find(event => event.event === "failed").category, "auth");
+  assert.equal(JSON.stringify(diagnostic).includes("confirmed before loss"), false);
   const ending = h.invoke("stop");
   assert.equal(h.invoke("retryRealtime").ok, false);
-  assert.equal(server.sockets.length, 4);
+  assert.equal(server.sockets.length, 3);
   stop.resolve(); await ending;
   assert.equal(readFileSync(join(h.store.sessionDir(id), "mic.wav")).readUInt32LE(40), 195200);
 });
@@ -389,12 +399,12 @@ test("failed finalization aborts quit and a recovered retry can close safely", a
   chmodSync(path, 0o400);
   t.after(() => { try { chmodSync(path, 0o600); } catch {} });
   h.events.get("before-quit")({ preventDefault() {} });
-  for (let i = 0; i < 20; i++) await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.calls.quits, 0);
   assert.equal(h.snap().recording.sessionId, id);
   chmodSync(path, 0o600);
   h.events.get("before-quit")({ preventDefault() {} });
-  for (let i = 0; i < 20; i++) await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.store.readSession(id).status, "complete");
   assert.equal(h.calls.quits, 1);
 });
@@ -404,7 +414,7 @@ test("quit waiting for failed startup exits after empty recording cleanup withou
   const start = deferred();
   const h = await launch(t, { start: () => start.promise });
   const starting = h.invoke('start');
-  for (let i = 0; i < 20; i++) await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.calls.starts, 1);
   let prevented = 0;
   h.events.get('before-quit')({ preventDefault() { prevented++; } });
@@ -437,7 +447,7 @@ test("real playback IPC accepts only library media acknowledgements and capture 
   const load = h.calls.mediaCommands.at(-1);
   assert.equal(load.action, 'load');
   let resolved = false; void playing.then(() => { resolved = true; });
-  const report = { token: load.token, commandId: load.id, status: 'playing', positionSec: 0, ack: true };
+  const report = { token: load.token, commandId: load.id, status: 'playing', positionSec: 0, rate: load.rate, ack: true };
   h.mediaReport(report, {});
   for (let i = 0; i < 10; i++) await Promise.resolve();
   assert.equal(resolved, false);
@@ -445,7 +455,7 @@ test("real playback IPC accepts only library media acknowledgements and capture 
   h.invoke('selectSession', 'other-history');
   assert.equal(h.snap().playback.sessionId, history.id);
   const starting = h.invoke('start');
-  for (let i = 0; i < 20; i++) await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.calls.starts, 0);
   assert.equal(h.snap().capturePhase, 'starting');
   assert.equal(h.snap().recording, null);
@@ -469,10 +479,10 @@ function seedPlayback(h) {
   }
   return doc.id;
 }
-async function mediaTick() { for (let i = 0; i < 20; i++) await Promise.resolve(); }
+async function mediaTick() { await new Promise(resolve => setImmediate(resolve)); }
 function ackMedia(h, status, positionSec = 0) {
   const command = h.calls.mediaCommands.at(-1);
-  h.mediaReport({ token: command.token, commandId: command.id, status, positionSec, ack: true });
+  h.mediaReport({ token: command.token, commandId: command.id, status, positionSec, rate: command.rate ?? h.snap().playback?.rate ?? 1, ack: true });
 }
 
 test('actual seek IPC rejects malformed identities and positions without changing a valid playback', async t => {
@@ -566,11 +576,11 @@ async function launchQueuedSeek(t) {
   const a = recording(1000), b = recording(2000);
   const handlers = new Map(), protocols = new Map(), windows = [], errors = [];
   let ready, holdNext = null, held = null;
-  let media = { token: null, url: null, positionSec: 0, status: 'idle' };
+  let media = { token: null, url: null, positionSec: 0, rate: 1, status: 'idle' };
   const trace = [];
   function acknowledge(command) {
     if (command.action === 'load') media = {
-      token: command.token, url: command.url, positionSec: command.positionSec ?? 0, status: 'playing',
+      token: command.token, url: command.url, positionSec: command.positionSec ?? 0, rate: command.rate ?? 1, status: 'playing',
     };
     else {
       assert.equal(command.token, media.token, 'media commands must address the attached source');
@@ -579,13 +589,14 @@ async function launchQueuedSeek(t) {
         if (command.resume) media.status = 'playing';
       } else if (command.action === 'pause') media.status = 'paused';
       else if (command.action === 'resume') media.status = 'playing';
+      else if (command.action === 'rate') media.rate = command.rate;
       else if (command.action === 'stop') media.status = 'idle';
       else throw new Error(`Unsupported media action: ${command.action}`);
     }
     trace.push({ action: command.action, token: command.token, positionSec: media.positionSec });
     handlers.get('app:playbackReport')({ sender: windows[0].webContents }, {
       token: command.token, commandId: command.id, status: media.status,
-      positionSec: media.positionSec, ack: true,
+      positionSec: media.positionSec, rate: media.rate, ack: true,
     });
   }
   class Window {
@@ -612,7 +623,7 @@ async function launchQueuedSeek(t) {
     static getAllWindows() { return windows; }
   }
   const boundaryModules = {
-    electron: {
+    electron: { ...trayFixture(),
       app: { setName() {}, commandLine: { appendSwitch() {} }, getAppPath: () => root,
         getPath: () => root, isReady: () => true, on() {},
         whenReady: () => ({ then: fn => { ready = fn(); } }),
@@ -629,15 +640,16 @@ async function launchQueuedSeek(t) {
     './windows/library': { createLibraryWindow: () => new Window() },
     './windows/glance': { createGlanceWindow: () => new Window() },
     './windows/load': { loadRenderer() {} },
+    './windows/dictation': { createDictationWindow: () => ({ prepare() {}, show() {}, close() {} }) },
   };
-  const loadSource = sourceLoader(fileURLToPath(new URL("./index.ts", import.meta.url)), { ...seekProductionModules, ...boundaryModules, "./dictation/macos": { createMacDictationBridge: () => undefined } });
+  const loadSource = sourceLoader(fileURLToPath(new URL("./index.ts", import.meta.url)), { ...seekProductionModules, ...boundaryModules, "./dictation/macos": { createMacDictationBridge: () => undefined }, "./capture/dictation": { prepareDictationCapture() {}, closePreparedDictationCapture() {}, startDictationCapture() { throw new Error("Dictation capture is outside this meeting/playback scenario"); } } });
   runInNewContext(seekCompiled, {
     exports: {}, require: name => {
       if (name.startsWith('node:')) return seekRequire(name);
       const module = boundaryModules[name] ?? seekProductionModules[name];
       return module ?? loadSource(name);
     },
-    console: { log() {}, error: (...args) => errors.push(args) }, process, setTimeout, clearTimeout,
+    console: { log() {}, error: (...args) => errors.push(args) }, process, AbortController, setTimeout, clearTimeout,
   });
   await ready;
   assert.deepEqual(errors, [], 'main initialization must succeed');
@@ -731,4 +743,114 @@ test('auto diarization IPC accepts booleans and ignores malformed values', async
       h.invoke('setAutoDiarize',invalid);assert.equal(h.store.readPrefs().autoDiarize,initial);
     }
   }
+});
+
+
+test('menu survives hidden library, settings request opens it, explicit quit destroys tray', async t => {
+  const h = await launch(t);
+  const menu = h.trays[0];
+  assert.equal(menu.icon.template, true);
+  h.windows[0].close();
+  assert.equal(h.windows[0].isDestroyed(), false);
+  assert.equal(h.windows[0].isVisible(), false);
+  menu.menu.find(item => item.label === '设置…').click();
+  assert.equal(h.windows[0].isVisible(), true);
+  assert.equal(h.snap().settingsRequest, 1);
+  menu.menu.find(item => item.label === '退出 Earshot').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(menu.destroyed, true);
+});
+
+test('real import IPC commits audio and single-track metadata, reports saved audio without a key', async t => {
+  let path;
+  const h = await launch(t, { key: null, pick: async () => ({ canceled: false, filePaths: [path] }),
+    decode: async (_path, options) => { options.onPCM(new Uint8Array(32000)); return { durationSec: 1 }; } });
+  path = join(h.root, 'demo.wav'); writeFileSync(path, 'encoded fixture');
+  const result = await h.invoke('importAudio');
+  assert.equal(result.ok, true);
+  assert.equal(h.snap().selectedId, result.sessionId);
+  assert.equal(h.snap().audioImport, undefined);
+  const doc = h.store.readSession(result.sessionId);
+  assert.equal(doc.durationSec, 1);
+  assert.deepEqual(doc.tracks, { microphone: false, system: true });
+  assert.equal(doc.jobs.live, 'idle');
+  assert.equal(doc.jobs.refined.status, 'failed');
+  assert.match(doc.jobs.refined.reason, /音频已保存/);
+  assert.equal(readFileSync(join(h.store.sessionDir(doc.id), 'original.wav'), 'utf8'), 'encoded fixture');
+  assert.equal(readFileSync(join(h.store.sessionDir(doc.id), 'system.wav')).length, 32044);
+});
+
+test('import picker and decoder serialize admission; cancel removes incomplete audio and quit awaits cleanup', async t => {
+  const gate = deferred(), decoding = deferred();
+  let path;
+  const h = await launch(t, { pick: async () => ({ canceled: false, filePaths: [path] }),
+    decode: async (_path, options) => { decoding.resolve(); await gate.promise; options.onPCM(new Uint8Array(32000)); return { durationSec: 1 }; } });
+  path = join(h.root, 'demo.wav'); writeFileSync(path, 'encoded fixture');
+  const pending = h.invoke('importAudio');
+  assert.equal(h.snap().audioImport.phase, 'choosing');
+  assert.equal((await h.invoke('importAudio')).ok, false);
+  assert.equal((await h.invoke('start')).code, 'busy');
+  await decoding.promise;
+  h.events.get('before-quit')({ preventDefault() {} });
+  assert.equal(h.calls.quits, 0);
+  gate.resolve();
+  const result = await pending;
+  assert.equal(result.canceled, true);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(h.calls.quits, 1);
+  assert.equal(h.store.listSummaries().length, 0);
+});
+
+test('transcript editing and bookmark IPC validate identity and broadcast persisted corrections', async t => {
+  const h = await launch(t);
+  const doc = h.store.createRecording();
+  h.store.finalize(doc.id, 'complete', { durationSec: 20 });
+  writeFileSync(join(h.store.sessionDir(doc.id), 'live.jsonl'), JSON.stringify({ id: 'turn', track: 'other', speaker: '对方', tStartMs: 1000, text: 'before' }) + '\n');
+  const turn = h.store.getDetail(doc.id).turns[0];
+  assert.equal((await h.invoke('correctTurn', { sessionId: '../x' })).ok, false);
+  const edited = await h.invoke('correctTurn', { sessionId: doc.id, turnId: turn.id, revision: turn.correction.revision, text: 'after', speaker: '测试' });
+  assert.equal(edited.ok, true);
+  const hits = await h.invoke('searchTranscripts', { query: 'after' });
+  assert.equal(hits.ok, true); assert.equal(hits.hits[0].sessionId, doc.id);
+  assert.equal((await h.invoke('addBookmark', { sessionId: doc.id, tStartMs: 5000, label: '重点' })).ok, true);
+  assert.equal(h.store.getDetail(doc.id).bookmarks[0].label, '重点');
+  const corrected = h.store.getDetail(doc.id).turns[0];
+  assert.equal((await h.invoke('undoTurnCorrection', { sessionId: doc.id, turnId: turn.id, revision: corrected.correction.revision })).ok, true);
+  assert.equal(h.store.getDetail(doc.id).turns[0].text, 'before');
+});
+
+test('live snapshot exposes newly saved bookmarks without loading full live transcript', async t => {
+  const h = await launch(t);
+  await h.invoke('start');
+  const id = h.snap().recording.sessionId;
+  assert.equal((await h.invoke('addBookmark', { sessionId: id, tStartMs: 0, label: '现场重点' })).ok, true);
+  assert.equal(h.snap().selected.bookmarks[0].label, '现场重点');
+  const mark = h.snap().selected.bookmarks[0];
+  assert.equal((await h.invoke('deleteBookmark', { sessionId: id, bookmarkId: mark.id })).ok, true);
+  assert.equal(h.snap().selected.bookmarks.length, 0);
+  await h.invoke('stop');
+});
+
+
+test('idle app quit waits for dictation clipboard cleanup; a failed cleanup keeps the app open for retry', async t => {
+  const cleanup=deferred(); let attempts=0;
+  const h=await launch(t,{bridge:{held:()=>false,escape:()=>false,captureTarget:()=>null,close:()=>{attempts++;return attempts===1?cleanup.promise:Promise.resolve();}}});
+  let prevented=0;h.events.get('before-quit')({preventDefault(){prevented++;}});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(prevented,1);assert.equal(attempts,1);assert.equal(h.calls.quits,0);
+  cleanup.reject(Error('clipboard still restoring'));await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(h.calls.quits,0);assert.match(h.calls.errors.at(-1)[0],/收尾尚未完成/);
+  h.events.get('before-quit')({preventDefault(){prevented++;}});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(attempts,2);assert.equal(h.calls.quits,1);
+});
+
+test('a dead pasteboard worker does not trap the app in its quit guard', async t => {
+  const {EventEmitter}=await import('node:events'); let worker;
+  class Worker extends EventEmitter { constructor(){super();worker=this;} unref(){} postMessage(){} }
+  const load=sourceLoader(fileURLToPath(new URL('./dictation/pasteboard-client.ts',import.meta.url)),{'node:worker_threads':{Worker}});
+  const client=load('./pasteboard-client').createPasteboardClient();
+  const copy=client.copy('synthetic'), rejected=assert.rejects(copy,/重新打开/);
+  await new Promise(resolve=>setImmediate(resolve));worker.emit('error',Error('worker load failed'));worker.emit('exit',1);await rejected;
+  const h=await launch(t,{bridge:{held:()=>false,escape:()=>false,captureTarget:()=>null,close:()=>client.close()}});
+  h.events.get('before-quit')({preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(h.calls.quits,1);assert.equal(h.calls.errors.length,0);
 });

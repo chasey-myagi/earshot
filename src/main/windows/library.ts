@@ -15,6 +15,8 @@ export function createLibraryWindow(): BrowserWindow {
     minHeight: 560,
     title: "Earshot",
     titleBarStyle: "hiddenInset",
+    // Center the native 14px controls in the renderer's 46px titlebar.
+    trafficLightPosition: { x: 16, y: 16 },
     show: false,
     backgroundColor: canvasBackground(),
     webPreferences: {

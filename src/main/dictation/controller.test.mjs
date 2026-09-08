@@ -8,7 +8,7 @@ function fixture(t, extra = {}) {
   let input, stops = 0, released = 0, recordings = 0;
   const inserts = [], submissions = [], states = [];
   const controller = createDictationController({ preflight: () => null, preview: () => false,
-    target: () => ({insert: text => {inserts.push(text);return true;},release: () => released++}),
+    target: () => ({insert: text => {inserts.push(text);return {kind:'verified'};},release: () => released++}),
     capture: async value => { input = value; recordings++; return {stop: async () => {stops++;}}; },
     transcribe: async (pcm, signal) => { submissions.push(Buffer.from(pcm)); return '你好。'; },
     changed: state => states.push(state), ...extra });
@@ -61,11 +61,11 @@ test('service failure retains audio for one retry; successful retry releases it 
   assert.equal((await h.controller.retry()).ok,false);
 });
 
-test('preview inserts only on request; changed input target keeps text for copy', async t => {
+test('preview retains text for copy and never offers an implicit return to the old input', async t => {
   let valid=true, inserted=0;
-  const h=fixture(t,{preview:()=>true,target:()=>({insert:()=>{if(!valid)return false;inserted++;return true;},release(){}})});
+  const h=fixture(t,{preview:()=>true,target:()=>({insert:()=>{if(!valid)return {kind:'not-posted',reason:'changed'};inserted++;return {kind:'verified'};},release(){}})});
   await h.controller.begin();h.pcm();await h.controller.end();assert.equal(inserted,0);assert.equal(h.controller.snapshot().phase,'result');
-  valid=false;assert.equal(h.controller.insert().ok,false);assert.equal(inserted,0);assert.equal(h.controller.snapshot().text,'你好。');
+  valid=false;assert.equal((await h.controller.insert()).ok,false);assert.equal(inserted,0);assert.equal(h.controller.snapshot().text,'你好。');
 });
 
 test('meeting or microphone preflight failure never captures; empty/short audio never inserts', async t => {
@@ -86,4 +86,49 @@ test('stream receives audio before release, completed history precedes insertion
  await h.controller.begin();h.pcm();assert.deepEqual(events,[['pcm',16000]]);
  const end=h.controller.end();await tick();assert.deepEqual(events,[['pcm',16000],['finish'],['saved','原始稿',0.5]]);assert.deepEqual(h.inserts,[]);
  await h.controller.cancel();result.resolve('整理稿');await end;assert.deepEqual(h.inserts,[]);assert.equal(h.controller.snapshot().phase,'idle');
+});
+
+test('cancel waits for an in-flight paste restoration before allowing shutdown', async t => {
+  const cleanup=deferred(); let aborted=false;
+  const h=fixture(t,{target:()=>({insert:async(text,signal)=>{signal.addEventListener('abort',()=>{aborted=true;});await cleanup.promise;return{kind:'posted-unconfirmed'};},release(){}})});
+  await h.controller.begin();h.pcm();const end=h.controller.end();await tick();
+  let done=false;const cancel=h.controller.cancel().then(()=>{done=true;});await tick();
+  assert.equal(aborted,true);assert.equal(done,false);assert.equal(h.controller.snapshot().phase,'idle');assert.equal(h.controller.busy(),true);
+  cleanup.resolve();await Promise.all([end,cancel]);assert.equal(done,true);assert.equal(h.controller.busy(),false);
+});
+for (const result of [{kind:'not-posted',reason:'目标变化'}, {kind:'posted-unconfirmed'}]) {
+  test(`clipboard restoration warning survives ${result.kind}`,async t=>{
+    const h=fixture(t,{target:()=>({insert:()=>({...result,warning:'原剪贴板未能恢复'}),release(){}})});
+    await h.controller.begin();h.pcm();await h.controller.end();
+    assert.match(h.controller.snapshot().message,/原剪贴板未能恢复/);
+    assert.equal(h.controller.snapshot().resultKind,result.kind==='not-posted'?'delivery-failed':'delivery-unconfirmed');
+    assert.equal(h.controller.snapshot().text,'你好。');
+  });
+}
+
+test('user cancel after a possible paste retains the same-session outcome and cleanup warning', async t => {
+  const cleanup=deferred();
+  const h=fixture(t,{target:()=>({insert:()=>cleanup.promise,release(){}})});
+  await h.controller.begin();h.pcm();const end=h.controller.end();await tick();
+  const canceled=h.controller.cancel(true);cleanup.resolve({kind:'posted-unconfirmed',warning:'原剪贴板未能恢复'});
+  await Promise.all([end,canceled]);
+  assert.equal(h.controller.snapshot().phase,'result');assert.equal(h.controller.snapshot().resultKind,'delivery-canceled');
+  assert.equal(h.controller.snapshot().text,'你好。');assert.match(h.controller.snapshot().message,/请检查输入框.*原剪贴板未能恢复/);
+  assert.equal((await h.controller.insert()).ok,false);
+});
+test('silent shutdown suppresses a pending user-cancel outcome without losing its cleanup wait', async t => {
+  const cleanup=deferred();
+  const h=fixture(t,{target:()=>({insert:()=>cleanup.promise,release(){}})});
+  await h.controller.begin();h.pcm();const end=h.controller.end();await tick();
+  const canceled=h.controller.cancel(true);const shutdown=h.controller.cancel();
+  cleanup.resolve({kind:'posted-unconfirmed'});await Promise.all([end,canceled,shutdown]);
+  assert.equal(h.controller.snapshot().phase,'idle');
+});
+test('cancel before a paste was dispatched hides normally, but retains a restoration failure', async t => {
+  for(const warning of [undefined,'原剪贴板未能恢复']) {
+    const cleanup=deferred();const h=fixture(t,{target:()=>({insert:()=>cleanup.promise,release(){}})});
+    await h.controller.begin();h.pcm();const end=h.controller.end();await tick();
+    const canceled=h.controller.cancel(true);cleanup.resolve({kind:'not-posted',reason:'已取消',warning});await Promise.all([end,canceled]);
+    assert.equal(h.controller.snapshot().phase,warning?'result':'idle');if(warning)assert.match(h.controller.snapshot().message,/原剪贴板未能恢复/);
+  }
 });

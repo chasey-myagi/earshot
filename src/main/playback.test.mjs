@@ -19,7 +19,7 @@ function fixture(t, options = {}) {
   controller.hostReady();
   const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
   function report(status, positionSec, command = commands.at(-1), ack = true) {
-    controller.report({ token: command.token, commandId: command.id, status, positionSec, ack });
+    controller.report({ token: command.token, commandId: command.id, status, positionSec, rate: command.rate ?? controller.snapshot()?.rate ?? 1, ack });
   }
   async function play(id = 'session-a', positionSec = 0) {
     const pending = controller.play(dir, id, `Title ${id}`, positionSec);
@@ -146,4 +146,30 @@ test('valid capability cannot authorize alternate hosts, paths, credentials or n
   assert.equal(h.controller.respond(new Request(command.url, { method: 'POST' })).status, 405);
   assert.equal(h.controller.respond(new Request(command.url, { method: 'HEAD' })).body, null);
   h.controller.hostClosed();
+});
+
+test('speed requires the media acknowledgement, preserves paused state and survives source changes', async t => {
+  const h = fixture(t, { timeoutMs: 1000 }); await h.play();
+  const pause = h.controller.pause(); await h.flush(); h.report('paused', 10); await pause;
+  const change = h.controller.setRate(1.5); await h.flush();
+  assert.equal(h.commands.at(-1).action, 'rate');
+  assert.equal(h.controller.snapshot().rate, 1, 'UI cannot claim speed was applied before acknowledgement');
+  const command = h.commands.at(-1);
+  h.controller.report({ token: command.token, commandId: command.id, status: 'paused', positionSec: 10, rate: 1, ack: true });
+  assert.equal(h.controller.snapshot().rate, 1, 'stale speed acknowledgement is rejected');
+  h.report('paused', 10); assert.equal((await change).ok, true);
+  assert.equal(h.controller.snapshot().rate, 1.5); assert.equal(h.controller.snapshot().status, 'paused');
+  await h.play('session-b'); assert.equal(h.commands.at(-1).rate, 1.5);
+  assert.equal(h.controller.snapshot().rate, 1.5);
+  for (const rate of [0, NaN, Infinity, '2', 1.1]) {
+    assert.equal((await h.controller.setRate(rate)).ok, false);
+    assert.equal(h.controller.snapshot().rate, 1.5); assert.equal(h.controller.snapshot().status, 'playing');
+  }
+});
+
+test('a rejected or unacknowledged speed change fails instead of reporting success', async t => {
+  const h = fixture(t); await h.play();
+  assert.equal((await h.controller.setRate(2)).ok, false);
+  assert.equal(h.controller.snapshot().rate, 1); assert.equal(h.controller.snapshot().status, 'error');
+  await h.play('session-b'); assert.equal(h.commands.at(-1).rate, 1);
 });

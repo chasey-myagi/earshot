@@ -106,6 +106,17 @@ async function waitUntil(fn, tries = 40) {
   throw new Error("timed out");
 }
 
+test('only two recordings process at once and a waiting job can be canceled without cloud work', async () => {
+  root=mkdtempSync(join(tmpdir(),'earshot-bounded-'));const store=createSessionStore(root);
+  const ids=Array.from({length:3},()=>{const doc=store.createRecording();store.finalize(doc.id,'complete');return doc.id;});
+  const gate=Promise.withResolvers();const entered=[];
+  const queue=makeQueue(store,{pending:new Map(),process:async({sessionId})=>{entered.push(sessionId);await gate.promise;}});
+  ids.forEach(id=>assert.equal(queuePost(queue,id,'all').ok,true));
+  await flushJobs();assert.deepEqual(entered,ids.slice(0,2));
+  assert.equal(cancelJob(queue,ids[2]).ok,true);gate.resolve();await Promise.all(queue.pending.values());
+  assert.deepEqual(entered,ids.slice(0,2));assert.equal(store.readSession(ids[2]).jobs.refined.status,'canceled');
+});
+
 test("queuePost success clears in-flight after process resolves and can enqueue again", async () => {
   root = mkdtempSync(join(tmpdir(), "earshot-queue-ok-"));
   const store = createSessionStore(root);
@@ -290,7 +301,7 @@ test("recoverStuckJobs only requeues non-recording sessions with a running job",
     },
   });
   recoverStuckJobs(queue);
-  await Promise.resolve();
+  await flushJobs();
   assert.deepEqual(
     calls.sort((a, b) => a.id.localeCompare(b.id)),
     [

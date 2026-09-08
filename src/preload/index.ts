@@ -16,6 +16,20 @@ import type {
 } from "../shared/types";
 
 contextBridge.exposeInMainWorld("earshot", {
+  searchTranscripts: input => ipcRenderer.invoke('app:searchTranscripts', input),
+  correctTurn: input => ipcRenderer.invoke('app:correctTurn', input),
+  undoTurnCorrection: input => ipcRenderer.invoke('app:undoTurnCorrection', input),
+  resetTurnCorrection: input => ipcRenderer.invoke('app:resetTurnCorrection', input),
+  addBookmark: input => ipcRenderer.invoke('app:addBookmark', input),
+  deleteBookmark: input => ipcRenderer.invoke('app:deleteBookmark', input),
+  hotwordStatus: () => ipcRenderer.invoke('app:hotwordStatus'),
+  saveHotwords: text => ipcRenderer.invoke('app:saveHotwords', text),
+  syncHotwords: () => ipcRenderer.invoke('app:syncHotwords'),
+  usageSummary: period => ipcRenderer.invoke('app:usageSummary', period),
+  openBilling: () => ipcRenderer.invoke('app:openBilling'),
+  importAudio: () => ipcRenderer.invoke('app:importAudio'),
+  cancelAudioImport: () => ipcRenderer.invoke('app:cancelAudioImport'),
+  setPlaybackRate: rate => ipcRenderer.invoke('app:setPlaybackRate', rate),
   snapshot: (): Promise<AppSnapshot> => ipcRenderer.invoke("app:snapshot"),
   saveKey: (key: string): Promise<SaveKeyResult> => ipcRenderer.invoke("app:saveKey", key),
   requestMic: (): Promise<ActionResult> => ipcRenderer.invoke("app:requestMic"),
@@ -27,6 +41,7 @@ contextBridge.exposeInMainWorld("earshot", {
   retryRealtime: (): Promise<ActionResult> => ipcRenderer.invoke("app:retryRealtime"),
   selectSession: (id: string): Promise<void> => ipcRenderer.invoke("app:selectSession", id),
   setAutoDiarize: (on: boolean): Promise<void> => ipcRenderer.invoke("app:setAutoDiarize", on),
+  setSharedMicrophone: (on: boolean): Promise<void> => ipcRenderer.invoke("app:setSharedMicrophone", on),
   renameSpeaker: (input: RenameSpeakerInput): Promise<RenameSpeakerResult> =>
     ipcRenderer.invoke("app:renameSpeaker", input),
   undoSpeakerRename: (id: string): Promise<ActionResult> => ipcRenderer.invoke("app:undoSpeakerRename", id),

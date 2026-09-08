@@ -38,8 +38,8 @@ export function createLiveBuffer() {
     return cached;
   }
 
-  function apply(track: Track, sentence: RealtimeSentence): TranscriptTurn | null {
-    const speaker = track === "you" ? "你" : "对方";
+  function apply(track: Track, sentence: RealtimeSentence, sharedMicrophone = false): TranscriptTurn | null {
+    const speaker = track === "you" ? sharedMicrophone ? "现场" : "你" : "对方";
     const id = `live-${track}-${sentence.sentenceId || (sentence.final ? `f${finals.size}` : "cur")}`;
     if (finals.has(id)) return null;
     cached = null;
@@ -67,7 +67,7 @@ export function createLiveBuffer() {
     cached = null;
   }
 
-  function clearPartials(): void { partials.clear(); cached = null; }
+  function clearPartials(track?: Track): void { if (track) partials.delete(track); else partials.clear(); cached = null; }
   return { apply, turns, reset, clearPartials };
 }
 

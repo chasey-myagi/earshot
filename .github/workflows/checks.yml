@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   macos:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -22,3 +22,6 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm audit --audit-level=high
+      - run: npm run fetch:voiceprint
+      - run: npm run package
+      - run: codesign --verify --deep --strict dist/Earshot.app

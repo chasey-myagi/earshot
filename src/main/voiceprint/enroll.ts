@@ -1,10 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SessionStore } from "../store/sessions.ts";
-import { addVoiceprint } from "./book.ts";
+import { audioKey } from "../providers/asr-checkpoint.ts";
+import { addVoiceprint, retireWrongSource } from "./book.ts";
 import { defaultEmbed, type EmbedFn } from "./embed-run.ts";
-import { parseSpeakerClusters, selectClusterPcm, type VoiceCluster } from "./select.ts";
-import { s16leToFloat32 } from "./wav.ts";
+import { parseSpeakerClusters, type VoiceCluster } from "./select.ts";
+import { voiceEvidence } from "./evidence.ts";
+
+export type EnrollmentResult = "remembered" | "insufficient" | "conflicting" | "unavailable" | "stale";
 
 export async function enrollSpeaker(opts: {
   store: SessionStore;
@@ -13,11 +16,12 @@ export async function enrollSpeaker(opts: {
   to: string;
   embed?: EmbedFn;
   isCurrent?: () => boolean;
-}): Promise<void> {
+}): Promise<EnrollmentResult> {
   try {
-    await runEnroll(opts);
+    return await runEnroll(opts);
   } catch (err) {
-    console.error("[earshot] voiceprint enroll failed", err);
+    console.error("[earshot] voiceprint enroll unavailable");
+    return "unavailable";
   }
 }
 
@@ -28,36 +32,42 @@ async function runEnroll(opts: {
   to: string;
   embed?: EmbedFn;
   isCurrent?: () => boolean;
-}): Promise<void> {
+}): Promise<EnrollmentResult> {
   const embed = opts.embed ?? defaultEmbed;
   const to = opts.to.trim();
-  if (!to || to === "你" || opts.isCurrent?.() === false) return;
+  if (!to || to === "你" || opts.isCurrent?.() === false) return "stale";
   const doc = opts.store.readSession(opts.sessionId);
   const speakersName = doc?.jobs.speakers.current;
-  if (!speakersName) return;
+  if (!speakersName) return "insufficient";
   const dir = opts.store.sessionDir(opts.sessionId);
-  const wavPath = join(dir, "system.wav");
-  if (!existsSync(wavPath)) return;
   let raw: unknown = null;
   try {
     raw = JSON.parse(readFileSync(join(dir, speakersName), "utf8"));
   } catch {
-    return;
+    return "unavailable";
   }
   const clusters = parseSpeakerClusters(raw);
   const cluster = opts.isCurrent
     ? clusters.find(cluster => cluster.speaker === opts.from)
     : clusterForRename(clusters, opts.store.readNames(opts.sessionId), opts.from, to);
-  if (!cluster) return;
-  const pcm = selectClusterPcm(wavPath, cluster);
-  if (pcm.length < 16000 * 2) return;
-  const embedding = await embed(s16leToFloat32(pcm));
-  if (!embedding || embedding.length === 0) return;
-  if (opts.isCurrent?.() === false) return;
+  if (!cluster) return "insufficient";
+  if (opts.store.readNames(opts.sessionId)[cluster.speaker] !== to) return "stale";
+  const wavPath = join(dir, cluster.track === "you" ? "mic.wav" : "system.wav");
+  if (!existsSync(wavPath)) return "insufficient";
+  const source = { sessionId: opts.sessionId, artifact: speakersName, cluster: cluster.speaker,
+    segments: cluster.segments, track: cluster.track ?? "other" as const, audioKey: await audioKey(wavPath, true) };
+  if (opts.isCurrent?.() === false || opts.store.readNames(opts.sessionId)[cluster.speaker] !== to) return "stale";
+  retireWrongSource(opts.store.rootDir, to, source);
+  const evidence = await voiceEvidence(wavPath, cluster, clusters, embed, { isCurrent: opts.isCurrent });
+  if (evidence.status !== "ready") return evidence.status;
+  if (opts.isCurrent?.() === false) return "stale";
   const latest = opts.store.readSession(opts.sessionId);
-  if (latest?.jobs.speakers.current !== speakersName || latest?.jobs.refined.current !== doc?.jobs.refined.current) return;
-  if (opts.store.readNames(opts.sessionId)[cluster.speaker] !== to) return;
-  addVoiceprint(opts.store.rootDir, to, embedding);
+  if (latest?.jobs.speakers.current !== speakersName || latest?.jobs.refined.current !== doc?.jobs.refined.current) return "stale";
+  if (opts.store.readNames(opts.sessionId)[cluster.speaker] !== to) return "stale";
+  for (const [index, embedding] of evidence.embeddings.entries()) addVoiceprint(opts.store.rootDir, to, embedding, {
+    ...source, segments: [evidence.segments[index]!],
+  });
+  return "remembered";
 }
 
 function clusterForRename(clusters: VoiceCluster[], names: Record<string, string>, from: string, to: string): VoiceCluster | undefined {

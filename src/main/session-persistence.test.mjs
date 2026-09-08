@@ -1,3 +1,4 @@
+import { trayFixture } from "../../scripts/electron-tray-fixture.mjs";
 // A failed stop remains retryable. Restoring writes and retrying must preserve valid metadata and a session that survives reopening.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -34,6 +35,7 @@ async function launch(t, existingRoot) {
     constructor() { sockets.push(this); }
     addEventListener(name, fn) { this.listeners.set(name, fn); }
     send() {}
+    destroy() { this.destroyed = true; this.visible = false; this.emit("closed"); }
     close() {}
     message(body) { this.listeners.get("message")?.({ data: JSON.stringify(body) }); }
     ready() { this.message({ header: { event: "task-started" } }); }
@@ -60,10 +62,13 @@ async function launch(t, existingRoot) {
     isDestroyed() { return this.destroyed; }
     isVisible() { return !this.destroyed && this.visible; }
     center() {}
+    setAlwaysOnTop() {}
+    setVisibleOnAllWorkspaces() {}
     focus() {}
     show() { this.visible = true; }
     showInactive() { this.visible = true; }
     hide() { this.visible = false; }
+    destroy() { this.destroyed = true; this.visible = false; this.emit("closed"); }
     close() {
       let prevented = false;
       this.emit("close", { preventDefault() { prevented = true; } });
@@ -75,7 +80,7 @@ async function launch(t, existingRoot) {
     }
     async loadFile(path, options = {}) {
       this.url = path;
-      this.surface = path.endsWith("capture.html") ? "capture" : options.hash || "library";
+      this.surface = path.endsWith("/dictation-capture.html") ? "dictation-capture" : path.endsWith("/capture.html") ? "capture" : options.hash || "library";
       this.webContents.emit("did-finish-load");
       if (this.surface === "capture") captureLoaded.resolve(this);
     }
@@ -92,7 +97,7 @@ async function launch(t, existingRoot) {
     whenReady: () => ({ then: fn => { ready = fn(); } }),
     quit() {},
   });
-  const electron = {
+  const electron = { ...trayFixture(),
     protocol: { registerSchemesAsPrivileged() {}, handle() {} },
     app, BrowserWindow: Window, ipcMain, dialog: { showErrorBox() {} }, shell: {},
     nativeTheme: { shouldUseDarkColors: false },

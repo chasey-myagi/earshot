@@ -6,16 +6,22 @@ A small macOS app for meeting recordings and voice input. Your recordings stay o
 
 [中文说明](README.zh-CN.md) · [Documentation](docs/README.md) · [Privacy](docs/privacy.md) · [Contributing](CONTRIBUTING.md)
 
-Earshot combines microphone and system audio recording, live and post-recording transcription, speaker naming, playback, and TXT/JSON export. Hold a shortcut to dictate into a text field, or review the result before inserting it. The interface is currently Chinese.
+Earshot combines microphone and system audio recording, live and post-recording transcription, speaker naming, playback, and TXT/JSON export. Hold a shortcut to dictate into a text field, or turn off automatic insertion and copy the result manually. The interface is currently Chinese.
 
 - **Record and revisit.** Read the full live transcript while recording continues. Reopen saved sessions, rename them, and jump from a timestamp to the original audio.
+- **Find and correct.** Search session titles, transcript text or speaker names locally. Correct one turn with undo and original text preserved; add timestamp bookmarks and listen at 0.75–2× speed. Import WAV, MP3 or M4A recordings up to 64 MiB and 30 minutes.
 - **Remember speakers.** Cloud diarization separates speakers; naming a speaker can create a local voice embedding for later sessions. Matching is best effort.
-- **Speak to type.** Streaming ASR with optional text polishing, safe insertion into supported text controls, and a copy fallback when the target changes.
+- **Speak to type.** Streaming ASR with optional text polishing, one clipboard paste into the original input location, and a copy fallback when the target changes or the edit cannot be confirmed.
+- **Reuse your vocabulary.** Save personal hotwords and inspect local model usage and estimated costs in Settings. Estimates are separate from provider billing; the inference API key cannot query your account balance.
 - **Bring your own key.** No Earshot account or relay. Cloud processing requires a DashScope key and incurs provider charges. This is not an offline transcription app.
+
+## Download and install
+
+Download the [0.1.0 Apple Silicon preview](https://github.com/chasey-myagi/earshot/releases/tag/v0.1.0) for **macOS 26.4 or later**. This preview is development-signed and **not notarized**; Gatekeeper may require an explicit exception. Read the [installation guide](docs/install.md) before opening it. Download an Earshot binary asset, not GitHub’s automatically generated source archive. Only macOS 26.7 has been tested locally; other supported OS versions and a fresh Mac installation remain unverified.
 
 ## Build and run
 
-The supported development target is Apple Silicon macOS. Use Node.js 22.18 or newer and npm. Install Xcode Command Line Tools if a native dependency needs to compile. Intel Macs are not validated.
+The current packaged target is Apple Silicon, macOS 26.4 or later. Use Node.js 22.18 or newer and npm. Install Xcode Command Line Tools if a native dependency needs to compile. Intel Macs are not validated.
 
 ```sh
 git clone https://github.com/chasey-myagi/earshot.git
@@ -45,7 +51,7 @@ Open Settings and save a Beijing DashScope API key. Meeting recording requires m
 | `⌃⌥R` | Start a recording or return to the current one |
 | Hold `⌥Space` | Dictate; release to finish |
 
-Shortcuts, insertion mode, ASR model, and optional polishing can be changed in Settings. Meeting recording and dictation cannot run at the same time. Dictation text is saved in the local library; its audio is held temporarily in memory. A failed or unsafe insertion keeps the result available to copy.
+Closing the main window leaves Earshot available from the menu bar and global shortcuts. Use Quit to exit. Shortcuts, automatic insertion, ASR model, and optional polishing can be changed in Settings. Meeting recording and dictation cannot run at the same time. Dictation text is saved in the local library; its audio is held temporarily in memory. A failed or unsafe insertion keeps the result available to copy. Automatic insertion uses one temporary clipboard paste and never presses Enter. Earshot restores the previous clipboard only while it still owns that temporary content; a newer user copy is preserved. When the target cannot confirm the edit, the result stays visible for you to check. Turn off automatic insertion to copy results manually.
 
 ## Data and limitations
 

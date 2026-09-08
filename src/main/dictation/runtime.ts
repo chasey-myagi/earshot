@@ -1,7 +1,7 @@
 import { clipboard, globalShortcut, ipcMain, powerMonitor, systemPreferences, shell } from 'electron';
 import { createDictationController, type InputTarget } from './controller';
 import { createShortcutSettings } from './shortcuts';
-import { startDictationCapture } from '../capture/dictation';
+import { startDictationCapture, prepareDictationCapture, closePreparedDictationCapture } from '../capture/dictation';
 import { startDictationStream } from '../providers/dictation-stream';
 import { polishDictation } from '../providers/dictation-polish';
 import { DEFAULT_MODELS } from '../../shared/model-settings';
@@ -10,7 +10,7 @@ import type { SessionStore } from '../store/sessions';
 import { createDictationWindow } from '../windows/dictation';
 import type { ActionResult } from '../../shared/types';
 
-export type DictationBridge = { captureTarget: () => InputTarget | null; held: (key: string) => boolean; escape: () => boolean };
+export type DictationBridge = { captureTarget: () => InputTarget | null; held: (key: string) => boolean; escape: () => boolean; failureReason?: () => string | null; copy?: (text: string) => Promise<void>; close?: () => Promise<void> };
 
 export function createDictationRuntime(opts: {
   store: SessionStore; root: string; apiKey: () => string | null; meetingBusy: () => boolean;
@@ -21,13 +21,28 @@ export function createDictationRuntime(opts: {
   const hud = createDictationWindow();
   let poll: ReturnType<typeof setInterval> | undefined;
   let shortcutCaptureTimer: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+  let screenPoint: InputTarget['screenPoint'];
+  const warmCapture = () => { if (!closed && settings.snapshot().prefs.enabled) prepareDictationCapture(); else closePreparedDictationCapture(); };
   let held = false, pollBusy = false, previousPhase = 'idle';
   const controller = createDictationController({
     preflight: () => !settings.snapshot().prefs.enabled ? '请先在设置中开启语音输入' : opts.meetingBusy() ? '正在录制，请先停止录制再使用语音输入' : !opts.apiKey() ? '请先在 Earshot 设置中保存百炼 API 密钥'
       : systemPreferences.getMediaAccessStatus('microphone') !== 'granted' ? '请在 Earshot 设置中允许麦克风访问' : null,
-    target: () => opts.bridge?.captureTarget() ?? null,
+    target: () => {
+      const target = opts.bridge?.captureTarget() ?? null;
+      screenPoint = target?.screenPoint ? { ...target.screenPoint } : undefined;
+      return target;
+    },
+    targetFailure: () => opts.bridge?.failureReason?.() ?? null,
     preview: () => settings.snapshot().prefs.delivery === 'preview',
-    capture: async input => { await opts.stopPlayback(); if (input.signal.aborted) throw new Error('Canceled'); return startDictationCapture(input); },
+    capture: async input => {
+      await opts.stopPlayback();
+      if (input.signal.aborted) throw new Error('Canceled');
+      try {
+        const capture = await startDictationCapture(input);
+        return { stop: async () => { try { await capture.stop(); } finally { warmCapture(); } } };
+      } catch (error) { warmCapture(); throw error; }
+    },
     stream: signal => startDictationStream({ apiKey: opts.apiKey() ?? '', model: (settings.snapshot().prefs.models ?? DEFAULT_MODELS).asr, signal }),
     transcribe: (pcm, signal) => { const stream = startDictationStream({ apiKey: opts.apiKey() ?? '', model: (settings.snapshot().prefs.models ?? DEFAULT_MODELS).asr, signal });
       for (let offset = 0; offset < pcm.length; offset += 3200) stream.send(pcm.subarray(offset, offset + 3200)); return stream.finish(); },
@@ -46,11 +61,21 @@ export function createDictationRuntime(opts: {
       return text;
     },
     changed: state => {
-      hud.show(state);
+      if (state.phase === 'idle') screenPoint = undefined;
+      if (!closed) hud.show(state, screenPoint);
       if (state.phase !== previousPhase) { previousPhase = state.phase; opts.changed(); }
       if (state.phase === 'idle') { clearInterval(poll); poll = undefined; held = false; }
     },
   });
+  async function userCancel() {
+    const point = screenPoint;
+    const cleanup = controller.cancel(true);
+    // cancel hides immediately; a later same-session paste warning must still
+    // appear on the original work screen, even if the mouse has since moved.
+    if (!closed && controller.busy()) screenPoint = point;
+    await cleanup;
+    if (controller.snapshot().phase === 'idle') screenPoint = undefined;
+  }
   async function keyPressed() {
     if (held || controller.busy()) return;
     // Keep meeting recording available if the platform bridge is unavailable.
@@ -64,7 +89,7 @@ export function createDictationRuntime(opts: {
       if (pollBusy) return;
       pollBusy = true;
       try {
-        if (opts.bridge!.escape()) { held = false; void controller.cancel(); return; }
+        if (opts.bridge!.escape()) { held = false; void userCancel(); return; }
         if (held && !opts.bridge!.held(settings.snapshot().prefs.dictation)) {
           held = false;
           void controller.end();
@@ -86,18 +111,22 @@ export function createDictationRuntime(opts: {
   function status() { return { ...settings.snapshot(), accessibility: systemPreferences.isTrustedAccessibilityClient(false), holdAvailable: Boolean(opts.bridge) }; }
   function suspend() { held = false; void controller.cancel(); }
   function register() {
-    settings.start();
+    settings.start(); hud.prepare(); warmCapture();
     powerMonitor.on('suspend', suspend); powerMonitor.on('lock-screen', suspend);
     ipcMain.handle('app:dictationSnapshot', () => controller.snapshot());
     ipcMain.handle('app:beginDictation', () => controller.begin());
     ipcMain.handle('app:endDictation', () => controller.end());
-    ipcMain.handle('app:cancelDictation', () => controller.cancel());
+    ipcMain.handle('app:cancelDictation', () => userCancel());
     ipcMain.handle('app:retryDictation', () => controller.retry());
     ipcMain.handle('app:insertDictation', () => controller.insert());
-    ipcMain.handle('app:copyDictation', (): ActionResult => {
-      const state = controller.snapshot();
+    ipcMain.handle('app:copyDictation', async (): Promise<ActionResult> => {
+      const state = controller.snapshot(), sessionId = controller.sessionId();
       if (state.phase !== 'result' || !state.text) return { ok: false, error: '没有可复制的文字' };
-      clipboard.writeText(state.text); void controller.cancel(); return { ok: true };
+      try {
+        if (opts.bridge?.copy) await opts.bridge.copy(state.text); else clipboard.writeText(state.text);
+        if (controller.sessionId() === sessionId && controller.snapshot().phase === 'result') await controller.cancel();
+        return { ok: true };
+      } catch (error) { return { ok: false, error: error instanceof Error ? error.message : '复制未完成，请稍后再试' }; }
     });
     ipcMain.handle('app:setShortcutCapture', (_event, active: unknown): ActionResult => {
       if (typeof active !== 'boolean') return { ok: false, error: '无效设置' };
@@ -110,7 +139,7 @@ export function createDictationRuntime(opts: {
     ipcMain.handle('app:saveShortcuts', async (_event, raw: unknown): Promise<ActionResult> => {
       if (controller.busy()) return { ok: false, error: '请先结束语音输入' };
       const result = settings.save(raw);
-      if (result.ok) await controller.cancel();
+      if (result.ok) { await controller.cancel(); warmCapture(); }
       opts.changed(); return result;
     });
     ipcMain.handle('app:requestAccessibility', () => {
@@ -118,8 +147,15 @@ export function createDictationRuntime(opts: {
       void shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
     });
   }
+  let closing: Promise<void> | undefined;
   return {
     register, status, snapshot: controller.snapshot, busy: controller.busy, cancel: controller.cancel, sessionId: controller.sessionId,
-    close: () => { clearTimeout(shortcutCaptureTimer); settings.close(); powerMonitor.removeListener('suspend', suspend); powerMonitor.removeListener('lock-screen', suspend); clearInterval(poll); void controller.cancel(); hud.close(); },
+    close: () => {
+      if (closing) return closing;
+      closed = true; closePreparedDictationCapture(); clearTimeout(shortcutCaptureTimer); settings.close();
+      powerMonitor.removeListener('suspend', suspend); powerMonitor.removeListener('lock-screen', suspend); clearInterval(poll); hud.close();
+      closing = controller.cancel().then(() => opts.bridge?.close?.()).finally(() => { closing = undefined; });
+      return closing;
+    },
   };
 }

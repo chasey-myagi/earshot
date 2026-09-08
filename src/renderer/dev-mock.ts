@@ -1,4 +1,5 @@
 import type {
+  ActionResult,
   AppSnapshot,
   EarshotApi,
   RecordingLive,
@@ -7,16 +8,21 @@ import type {
   SessionSummary,
   TranscriptTurn,
 } from "../shared/types";
+import { normalizeHotwords, type HotwordStatus } from "../shared/hotwords";
+import type { CorrectTurnInput, TurnCorrectionInput, TranscriptSearchHit } from "../shared/transcript-tools";
 
 /**
  * 仅 DEV + 无 preload 时注入,便于 Vite 浏览器预览。
- * 场景经 ?mock= 切换:first | denied | nokey | ready(默认) | working | failed | recording
+ * 场景经 ?mock= 切换:first | denied | nokey | ready(默认) | working | failed | recording | usage
  * recording 场景配合 #glance 使用,双轨 partial 持续流式更新。
  */
 export function installDevMock(): void {
   if (!import.meta.env.DEV || typeof window.earshot !== "undefined") return;
 
   const scenario = new URLSearchParams(location.search).get("mock") ?? "ready";
+  const voiceStatus = new URLSearchParams(location.search).get("voice");
+  const voiceStates = ["pending", "running", "remembered", "insufficient", "conflicting", "unavailable", "stale"] as const;
+  const registrationStatus = voiceStates.find(status => status === voiceStatus);
   const dayMs = 86_400_000;
   const at = (offsetDays: number, h: number, m: number): string => {
     const d = new Date(Date.now() - offsetDays * dayMs);
@@ -85,6 +91,7 @@ export function installDevMock(): void {
     jobs: jobsByScenario,
     turns,
     people: named ? ["王明", "林晓"] : [],
+    ...(registrationStatus ? { voiceRegistrations: [{ name: "王明", status: registrationStatus }] } : {}),
   };
 
   const others: SessionSummary[] = [
@@ -96,6 +103,16 @@ export function installDevMock(): void {
 
   const dictationFixture: SessionDetail = { id: 's-dictation', kind: 'dictation', title: '明天下午三点半开评审', startedAt: at(0, 15, 15), endedAt: at(0, 15, 15), durationSec: 12, status: 'complete', jobs: { live: 'done', refined: 'idle', speakers: 'idle' }, turns: [], people: [],
     dictation: { text: '明天下午三点半开评审，请小王把第二版文档发给我。', rawText: '嗯，明天下午两点，不对，改成三点半开评审，请小王把第二版文档发给我。', asrModel: 'qwen-audio-3.0-asr-flash-streaming', polishModel: 'qwen3.7-flash' } };
+  const previewDetails = new Map<string, SessionDetail>([
+    [weekly.id, weekly], [dictationFixture.id, dictationFixture],
+    ...others.map(row => [row.id, { ...row, endedAt: row.startedAt, turns: structuredClone(turns.slice(0, 8)), people: [...weekly.people] }] as [string, SessionDetail]),
+  ]);
+  for (const detail of previewDetails.values()) {
+    detail.bookmarks = detail.id === weekly.id ? [{ id: "10000000-0000-4000-8000-000000000001", tStartMs: 242000, label: "演示数据" }] : [];
+    if (detail.kind === 'dictation' && detail.dictation) detail.turns = [{ id: 'dictation', track: 'you', speaker: '你', text: detail.dictation.text, tStartMs: 0 }];
+    else for (const turn of detail.turns) turn.correction = { revision: '0'.repeat(64), originalText: turn.text,
+      originalSpeaker: turn.speaker, edited: false, speakerOverridden: false, canUndo: false };
+  }
   const empty = scenario === "first" || scenario === "denied";
   const state: AppSnapshot = {
     hasApiKey: !(scenario === "first" || scenario === "nokey"),
@@ -120,12 +137,50 @@ export function installDevMock(): void {
   const ok = { ok: true as const };
   let liveDetail: SessionDetail | null = null;
   let streamTimer: number | undefined;
+  let playbackRate = 1;
+  let editRevision = 0;
+  const editHistory = new Map<string, { text: string; speaker: string }[]>();
+  const detailFor = (id: string) => id === liveDetail?.id ? liveDetail : previewDetails.get(id);
+  const previewOnly = (feature: string): ActionResult => ({ ok: false, error: `浏览器预览不支持${feature}，请在 Earshot 应用中操作` });
+  let hotwords: HotwordStatus = {
+    words: empty ? [] : ['矩阵起源', 'MatrixOne', 'Earshot'], updatedAt: null, sync: empty ? 'empty' : 'pending',
+    message: '仅为界面预览，未读取本机词表或连接百炼。',
+    models: [
+      { model: 'qwen-audio-3.0-asr-flash-streaming', label: 'Qwen Audio 3.0 语音输入', supported: true, ready: false },
+      { model: 'fun-asr', label: '录音文件转写', supported: true, ready: false },
+      { model: 'fun-asr-realtime', label: '录中实时转写', supported: true, ready: false },
+      { model: 'qwen3-asr-flash-realtime', label: 'Qwen3 ASR 语音输入', supported: false, ready: false },
+    ],
+  };
+  function editTurn(input: TurnCorrectionInput | CorrectTurnInput, action: 'correct' | 'undo' | 'reset'): ActionResult {
+    const detail = detailFor(input.sessionId), turn = detail?.turns.find(row => row.id === input.turnId);
+    if (!detail || detail.status === 'recording' || !turn?.correction || turn.partial) return { ok: false, error: '这段暂时无法编辑' };
+    if (input.revision !== turn.correction.revision) return { ok: false, error: '这段转写已更新，请重新打开编辑' };
+    const key = `${input.sessionId}:${input.turnId}`, history = editHistory.get(key) ?? [];
+    let value: { text: string; speaker: string };
+    if (action === 'undo') {
+      if (!history.length) return { ok: false, error: '没有可撤销的修改' };
+      value = history.pop()!;
+    } else {
+      if (action === 'correct') {
+        const draft = input as CorrectTurnInput;
+        if (!draft.text.trim() || draft.text.length > 20000 || !draft.speaker.trim() || draft.speaker.length > 80 || /[\u0000-\u001f\u007f]/.test(draft.speaker)) return { ok: false, error: '正文不能为空且最多 20000 字；说话人最多 80 字' };
+        value = { text: draft.text, speaker: draft.speaker.trim() };
+      } else value = { text: turn.correction.originalText, speaker: turn.correction.originalSpeaker };
+      if (value.text === turn.text && value.speaker === turn.speaker) return ok;
+      history.push({ text: turn.text, speaker: turn.speaker });
+    }
+    editHistory.set(key, history.slice(-20));
+    Object.assign(turn, value);
+    turn.correction = { ...turn.correction, revision: (++editRevision).toString(16).padStart(64, '0'),
+      edited: value.text !== turn.correction.originalText || value.speaker !== turn.correction.originalSpeaker,
+      speakerOverridden: value.speaker !== turn.correction.originalSpeaker, canUndo: history.length > 0 };
+    emit(); return ok;
+  }
   let connection: RecordingLive["connection"] = scenario === "lost" ? "disconnected" : "connected";
   const select = (id: string): void => {
     state.selectedId = id;
-    const summary = others.find(row => row.id === id);
-    state.selected = id === dictationFixture.id ? dictationFixture : id === liveDetail?.id ? liveDetail : id === weekly.id ? weekly : summary
-      ? { ...summary, endedAt: summary.startedAt, turns: turns.slice(0, 8), people: weekly.people } : null;
+    state.selected = detailFor(id) ?? null;
   };
 
   // ── recording 场景:双轨流式 partial ──
@@ -206,6 +261,63 @@ export function installDevMock(): void {
   }
 
   const api: EarshotApi = {
+    searchTranscripts: async ({ query, limit = 50 }) => {
+      if (query.length > 200 || /[\u0000-\u001f\u007f]/.test(query) || !Number.isInteger(limit) || limit < 1 || limit > 100) return { ok: false, error: '搜索最多 200 字，结果上限为 100 条' };
+      const terms = [...new Set(query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean))];
+      if (!terms.length) return { ok: true, hits: [], truncated: false };
+      const hits: TranscriptSearchHit[] = [];
+      for (const summary of state.sessions) {
+        const detail = detailFor(summary.id); if (!detail) continue;
+        const titleMatches = terms.every(term => detail.title.toLocaleLowerCase().includes(term));
+        if (titleMatches) hits.push({ sessionId: detail.id, sessionTitle: detail.title, turnId: null, tStartMs: null, snippet: detail.title });
+        for (const turn of detail.turns) {
+          const text = `${turn.speaker}\n${turn.text}`.toLocaleLowerCase(), content = `${detail.title}\n${text}`.toLocaleLowerCase();
+          if (!terms.every(term => content.includes(term)) || (titleMatches && !terms.some(term => text.includes(term)))) continue;
+          hits.push({ sessionId: detail.id, sessionTitle: detail.title, turnId: turn.id, tStartMs: turn.tStartMs,
+            snippet: turn.text.slice(0, 180), speaker: turn.speaker, revision: turn.correction?.revision });
+        }
+      }
+      return { ok: true, hits: hits.slice(0, limit), truncated: hits.length > limit };
+    },
+    correctTurn: async input => editTurn(input, 'correct'),
+    undoTurnCorrection: async input => editTurn(input, 'undo'),
+    resetTurnCorrection: async input => editTurn(input, 'reset'),
+    addBookmark: async ({ sessionId, tStartMs, label = '' }) => {
+      const detail = detailFor(sessionId), maxMs = state.recording?.sessionId === sessionId ? state.recording.elapsedSec * 1000 : (detail?.durationSec ?? 0) * 1000;
+      if (!detail || detail.kind === 'dictation' || !Number.isSafeInteger(tStartMs) || tStartMs < 0 || tStartMs > maxMs || label.length > 80 || /[\u0000-\u001f\u007f]/.test(label)) return { ok: false, error: '标记时间须在录音内，名称最多 80 字' };
+      if ((detail.bookmarks?.length ?? 0) >= 10000) return { ok: false, error: '这场录音的标记已达上限' };
+      detail.bookmarks = [...(detail.bookmarks ?? []), { id: crypto.randomUUID(), tStartMs, label: label.trim() }].sort((a, b) => a.tStartMs - b.tStartMs);
+      emit(); return ok;
+    },
+    deleteBookmark: async ({ sessionId, bookmarkId }) => {
+      const detail = detailFor(sessionId);
+      if (!detail?.bookmarks?.some(row => row.id === bookmarkId)) return { ok: false, error: '标记已删除，请刷新' };
+      detail.bookmarks = detail.bookmarks.filter(row => row.id !== bookmarkId); emit(); return ok;
+    },
+    hotwordStatus: async () => structuredClone(hotwords),
+    saveHotwords: async text => {
+      hotwords = { ...hotwords, words: normalizeHotwords(text), updatedAt: null, sync: 'pending', message: '仅更新本页示例，未写入本机或同步到百炼；刷新页面后恢复。' };
+      if (!hotwords.words.length) hotwords.sync = 'empty';
+      return structuredClone(hotwords);
+    },
+    syncHotwords: async () => ({ ...structuredClone(hotwords), sync: 'error', message: '浏览器预览无法同步云端热词，请在 Earshot 应用中操作。' }),
+    usageSummary: async (period = 'month') => {
+      const now = Date.now(), sample = scenario === 'usage';
+      return { period, since: now - dayMs * (period === 'today' ? 1 : 30), updatedAt: now, trackingSince: now - dayMs * 30,
+        requests: sample ? 12 : 0, audioSeconds: sample ? 3600 : 0, inputTokens: 0, outputTokens: 0,
+        estimatedCny: sample ? 1.19 : 0, unpricedRequests: 0, localMeasuredRequests: 0, unconfirmedRequests: 0,
+        rows: sample ? [{ model: 'qwen-audio-3.0-asr-flash-streaming', requests: 12, audioSeconds: 3600, inputTokens: 0, outputTokens: 0, estimatedCny: 1.19, unpricedRequests: 0 }] : [],
+        actualBilling: 'unavailable', balanceCny: null,
+        billingReason: sample ? '界面预览：以上为虚构示例数据，不是实际用量、费用或账户余额。请在 Earshot 应用中查看本机记录。' : '浏览器预览未读取任何真实用量或账户余额；请在 Earshot 应用中查看本机记录。',
+        pricingDate: '预览示例', retentionDays: 366, capped: false };
+    },
+    openBilling: async () => { window.alert('请在 Earshot 应用中打开百炼账单；浏览器预览未连接账户。'); },
+    importAudio: async () => ({ ok: false, error: '浏览器预览无法导入真实文件，请在 Earshot 应用中操作。' }),
+    cancelAudioImport: async () => { delete state.audioImport; emit(); },
+    setPlaybackRate: async rate => {
+      if (!state.playback || state.recording || ![0.75, 1, 1.25, 1.5, 2].includes(rate)) return { ok: false, error: '请选择有效的播放速度，并先打开一段录音' };
+      playbackRate = rate; state.playback.rate = rate; emit(); return ok;
+    },
     snapshot: async () => structuredClone(state),
     saveKey: async () => {
       state.hasApiKey = true;
@@ -233,7 +345,10 @@ export function installDevMock(): void {
       emit();
       await new Promise(resolve => setTimeout(resolve, 250));
       liveDetail.status = "complete";
+      liveDetail.durationSec = state.recording.elapsedSec;
       liveDetail.turns = liveDetail.turns.filter(row => !row.partial);
+      for (const turn of liveDetail.turns) turn.correction = { revision: '0'.repeat(64), originalText: turn.text,
+        originalSpeaker: turn.speaker, edited: false, speakerOverridden: false, canUndo: false };
       liveDetail.jobs.live = "done";
       state.sessions = state.sessions.map(row => row.id === liveDetail!.id ? summaryOf(liveDetail!) : row);
       state.recording = null;
@@ -252,11 +367,13 @@ export function installDevMock(): void {
       state.autoDiarize = on;
       emit();
     },
+    setSharedMicrophone: async (on: boolean) => { state.sharedMicrophone = on; emit(); },
     renameSession: async ({sessionId,title}) => {
       const target = state.sessions.find(row => row.id === sessionId);
       const name = title.trim();
       if(!target || !name || Array.from(name).length > 80) return {ok:false,error:"名称不能为空，且最多 80 个字符"};
       target.title=name;
+      const preview = detailFor(sessionId); if (preview) preview.title = name;
       if (weekly.id === sessionId) weekly.title = name;
       const older = others.find(row => row.id === sessionId);
       if (older) older.title = name;
@@ -312,8 +429,11 @@ export function installDevMock(): void {
       if (state.recording) return { ok: false, error: "录音中不能回听，避免把播放录入本场", code: "busy" };
       const session = state.sessions.find(row => row.id === id);
       if (!session) return { ok: false, error: "Unknown session" };
+      if (state.playback?.sessionId === id && ['paused', 'playing'].includes(state.playback.status)) {
+        state.playback.status = 'playing'; emit(); return ok;
+      }
       state.playingSessionId = id;
-      state.playback = { sessionId: id, title: session.title, status: "playing", positionSec: 0, durationSec: session.durationSec };
+      state.playback = { sessionId: id, title: session.title, status: "playing", positionSec: 0, durationSec: session.durationSec, rate: playbackRate };
       emit();
       return ok;
     },
@@ -321,7 +441,9 @@ export function installDevMock(): void {
     resumePlayback: async () => { if (state.playback) { if (state.playback.status === "ended") state.playback.positionSec = 0; state.playback.status = "playing"; } emit(); return ok; },
     seekPlayback: async ({ sessionId, positionSec, resume }) => {
       if (state.recording) return { ok: false, error: "Recording in progress" };
-      if (state.playback?.sessionId !== sessionId) await api.playSession(sessionId);
+      const target = state.sessions.find(row => row.id === sessionId);
+      if (!target || !Number.isFinite(positionSec) || positionSec < 0 || positionSec > target.durationSec) return { ok: false, error: '无效的回听位置' };
+      if (state.playback?.sessionId !== sessionId) { const loaded = await api.playSession(sessionId); if (!loaded.ok) return loaded; }
       if (state.playback) { state.playback.positionSec = positionSec; if (resume) state.playback.status = "playing"; }
       emit(); return ok;
     },
@@ -339,8 +461,8 @@ export function installDevMock(): void {
     saveShortcuts: async () => ({ok:false,error:'请在 Earshot 应用中设置系统快捷键'}), requestAccessibility: async () => {},
     deleteSession: async () => ({ ok: false, error: "请在 Earshot 应用中管理真实会话" }),
     undoDeleteSession: async () => ({ ok: false, error: "没有待撤销的删除" }),
-    revealSession: async () => ({ ok: true }),
-    revealExport: async () => ({ ok: true }),
+    revealSession: async () => previewOnly("打开本机录音目录"),
+    revealExport: async () => previewOnly("显示导出文件"),
     exportTranscript: async () => ({ ok: false, error: "请在 Earshot 应用中导出" }),
     onChange: (fn: () => void) => {
       listeners.add(fn);
@@ -351,7 +473,7 @@ export function installDevMock(): void {
   };
   window.setInterval(() => {
     if (state.playback?.status !== "playing") return;
-    state.playback.positionSec = Math.min(state.playback.durationSec, state.playback.positionSec + 0.25);
+    state.playback.positionSec = Math.min(state.playback.durationSec, state.playback.positionSec + 0.25 * state.playback.rate);
     if (state.playback.positionSec >= state.playback.durationSec) state.playback.status = "ended";
     emit();
   }, 250);

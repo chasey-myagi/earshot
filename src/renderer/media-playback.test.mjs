@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { createMediaPlayback } from './media-playback.ts';
 
 class Media extends EventTarget {
+  playbackRate = 1; preservesPitch = false;
   src = ''; paused = true; ended = false; readyState = 0; duration = 30;
   seeking = false; time = 0; playCalls = 0; pauseCalls = 0; loadCalls = 0;
   get currentTime() { return this.time; }
@@ -146,4 +147,32 @@ test('production controller and media host exchange real commands and acknowledg
   rejectNext=true;assert.equal((await controller.play(dir,'c','C')).ok,false);assert.equal(controller.snapshot().status,'error');
   assert.equal(instances.at(-1).src,'');rejectNext=false;
   assert.equal((await controller.play(dir,'a','A')).ok,true);await controller.stopAndWait();assert.equal(controller.snapshot(),null);assert.equal(instances.at(-1).src,'');
+});
+
+test('speed applies on load and paused media without changing position, with pitch preserved', async () => {
+  const h = fixture(); await h.run('load', { url: 'earshot-audio://session/one', positionSec: 5, rate: 1.5 });
+  const audio = h.instances[0];
+  assert.equal(audio.playbackRate, 1.5); assert.equal(audio.preservesPitch, true);
+  assert.equal(h.reports.at(-1).rate, 1.5);
+  await h.run('pause'); const playCalls = audio.playCalls;
+  for (const rate of [0.75, 1, 1.25, 1.5, 2]) {
+    await h.run('rate', { rate });
+    assert.equal(audio.playbackRate, rate); assert.equal(audio.currentTime, 5);
+    assert.equal(audio.paused, true); assert.equal(audio.playCalls, playCalls);
+    assert.equal(h.reports.at(-1).rate, rate); assert.equal(h.reports.at(-1).ack, true);
+  }
+  await h.run('seek', { positionSec: 0 }); assert.equal(audio.paused, true);
+  await h.run('seek', { positionSec: 30 }); assert.equal(audio.paused, true);
+  h.host.dispose();
+});
+
+test('a browser refusing playback speed reports error, never a successful speed acknowledgement', async () => {
+  const h = fixture({ create: () => {
+    const media = new Media();
+    Object.defineProperty(media, 'playbackRate', { get: () => 1, set: () => {} });
+    return media;
+  } });
+  await h.run('load', { url: 'earshot-audio://session/one', rate: 1.5 });
+  assert.equal(h.reports.at(-1).status, 'error');
+  assert.equal(h.reports.some(report => report.ack && report.status === 'playing'), false);
 });

@@ -16,7 +16,7 @@ export function sourceLoader(entry, boundaries) {
     const source = readFileSync(filename, 'utf8').replaceAll('import.meta.url', JSON.stringify(pathToFileURL(filename).href));
     const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
     runInNewContext(compiled, { module, exports: module.exports, __dirname: dirname(filename),
-      require: key => get(key, filename), console, process, Buffer, Error, URL, AbortController, Uint8Array, ArrayBuffer, setTimeout, clearTimeout, setInterval, clearInterval,
+      require: key => get(key, filename), console, process, Buffer, Error, URL, AbortController, fetch: boundaries.fetch ?? (() => { throw new Error('Network disabled in source fixture'); }), Uint8Array, ArrayBuffer, setTimeout, clearTimeout, setInterval, clearInterval,
     }, { filename });
     return module.exports;
   }

@@ -1,3 +1,4 @@
+import { trayFixture } from "../../scripts/electron-tray-fixture.mjs";
 // Metadata IO failure must not escape a WebSocket event or suppress connection notifications. Audio capture and save retry survive.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -42,12 +43,14 @@ async function launch(t) {
     constructor() { sockets.push(this); }
     addEventListener(name, fn) { this.listeners.set(name, fn); }
     send() {}
+    destroy() { this.destroyed = true; this.visible = false; this.emit("closed"); }
     close() {}
     ready() {
       this.listeners.get("open")?.({});
       this.listeners.get("message")?.({ data: JSON.stringify({ header: { event: "task-started" } }) });
     }
     disconnect() { this.listeners.get("close")?.({}); }
+    deny() { this.listeners.get("message")?.({ data: JSON.stringify({header: {event: "task-failed", error_code: "InvalidApiKey"}}) }); }
   }
   const ipcMain = new EventEmitter();
   ipcMain.handle = (name, fn) => handlers.set(name, fn);
@@ -71,10 +74,13 @@ async function launch(t) {
     isDestroyed() { return this.destroyed; }
     isVisible() { return !this.destroyed && this.visible; }
     center() {}
+    setAlwaysOnTop() {}
+    setVisibleOnAllWorkspaces() {}
     focus() {}
     show() { this.visible = true; }
     showInactive() { this.visible = true; }
     hide() { this.visible = false; }
+    destroy() { this.destroyed = true; this.visible = false; this.emit("closed"); }
     close() {
       let prevented = false;
       this.emit("close", { preventDefault() { prevented = true; } });
@@ -86,7 +92,7 @@ async function launch(t) {
     }
     async loadFile(path, options = {}) {
       this.url = path;
-      this.surface = path.endsWith("capture.html") ? "capture" : options.hash || "library";
+      this.surface = path.endsWith("/dictation-capture.html") ? "dictation-capture" : path.endsWith("/capture.html") ? "capture" : options.hash || "library";
       this.webContents.emit("did-finish-load");
       if (this.surface === "capture") captureLoaded.resolve(this);
     }
@@ -101,7 +107,7 @@ async function launch(t) {
     getAppPath: () => root, getPath: () => root, isReady: () => true,
     whenReady: () => ({ then: fn => { ready = fn(); } }), quit() {},
   });
-  const electron = {
+  const electron = { ...trayFixture(),
     app, BrowserWindow: Window, ipcMain, dialog: { showErrorBox() {} }, shell: {},
     protocol: { registerSchemesAsPrivileged() {}, handle() {} },
     nativeTheme: { shouldUseDarkColors: false },
@@ -193,6 +199,7 @@ async function launch(t) {
     },
     ready() { sockets.forEach(socket => socket.ready()); },
     disconnect() { sockets[0].disconnect(); },
+    deny() { sockets[0].deny(); },
     pcm(win, track, bytes) { for (let offset = 0; offset < bytes.length; offset += 8192) ipcMain.emit("capture:pcm", { sender: win.webContents }, track, bytes.subarray(offset, offset + 8192)); },
     clearNotifications() { windows.forEach(win => { win.notifications = []; }); },
     delivery(status) {
@@ -211,12 +218,12 @@ async function launch(t) {
   };
 }
 
-for (const status of ["connected", "disconnected"]) {
+for (const status of ["connected", "reconnecting", "disconnected"]) {
   for (const failure of ["EIO", "EACCES", null]) {
     test(`${status} ${failure ? `metadata ${failure}` : "writable metadata control"} publishes to both windows and preserves audio/save recovery`, async t => {
       const h = await launch(t);
       const { win, id } = await h.start();
-      if (status === "disconnected") h.ready();
+      if (status !== "connected") h.ready();
       const before = { you: Buffer.alloc(32000, 1), other: Buffer.alloc(32000, 2) };
       const after = { you: Buffer.alloc(32000, 3), other: Buffer.alloc(32000, 4) };
       for (const track of ["you", "other"]) h.pcm(win, track, before[track]);
@@ -224,7 +231,7 @@ for (const status of ["connected", "disconnected"]) {
       if (failure) h.failMetadata(failure);
 
       let callbackError = null;
-      try { status === "connected" ? h.ready() : h.disconnect(); }
+      try { status === "connected" ? h.ready() : status === "disconnected" ? h.deny() : h.disconnect(); }
       catch (error) { callbackError = error; }
       const observed = {
         callbackError: callbackError?.code ?? (callbackError ? callbackError.message : null),
@@ -244,7 +251,7 @@ for (const status of ["connected", "disconnected"]) {
         h.restoreWrites();
       }
       assert.equal((await h.invoke("stop")).ok, true, "saving succeeds after metadata storage recovers");
-      assert.equal(h.session().jobs.live, status === "disconnected" ? "failed" : "done", "stop retry commits the pending live status before finalization");
+      assert.equal(h.session().jobs.live, status !== "connected" ? "failed" : "done", "stop retry commits the pending live status before finalization");
       assert.equal(h.invoke("snapshot").recording, null);
       assert.equal(h.session().status, "complete");
       for (const [track, name] of [["you", "mic.wav"], ["other", "system.wav"]]) {

@@ -33,8 +33,24 @@ function writeToneWav(path, seconds) {
   buf.writeUInt16LE(16, 34);
   buf.write("data", 36);
   buf.writeUInt32LE(samples * 2, 40);
+  for (let i=0;i<samples;i++) buf.writeInt16LE(Math.round(2000*Math.sin(i/20)),44+i*2);
   writeFileSync(path, buf);
 }
+
+test('a user correction made during automatic identification wins over the late match', async () => {
+  root=mkdtempSync(join(tmpdir(),'earshot-late-id-'));const store=createSessionStore(root),sessionId=sessionWithCluster(store);
+  addVoiceprint(root,'王明',vec(1,0));const entered=Promise.withResolvers(),result=Promise.withResolvers();
+  const identify=identifySession({store,sessionId,embed:async()=>{entered.resolve();return result.promise;}});
+  await entered.promise;store.writeNames(sessionId,{'小 A':'张三'});result.resolve(vec(1,0));await identify;
+  assert.equal(store.readNames(sessionId)['小 A'],'张三');
+});
+
+test('inconsistent regions of one cloud cluster are not automatically named', async () => {
+  root=mkdtempSync(join(tmpdir(),'earshot-mixed-id-'));const store=createSessionStore(root),sessionId=sessionWithCluster(store);
+  addVoiceprint(root,'王明',vec(1,0));let sample=0;
+  await identifySession({store,sessionId,embed:async()=>sample++===0?vec(1,0):vec(0,1)});
+  assert.deepEqual(store.readNames(sessionId),{});
+});
 
 function sessionWithCluster(store) {
   const created = store.createRecording();
@@ -168,7 +184,7 @@ test("identifySession does not write a name when cosine is below 0.55", async ()
   assert.equal(existsSync(join(store.sessionDir(sessionId), "auto-names.json")), false);
 });
 
-test("identifySession gives a contested person to the higher-scoring cluster", async () => {
+test("identifySession names consistent nonoverlapping clusters as the same person", async () => {
   root = mkdtempSync(join(tmpdir(), "earshot-id-"));
   const store = createSessionStore(root);
   addVoiceprint(root, "王明", vec(1, 0, 0));
@@ -176,14 +192,14 @@ test("identifySession gives a contested person to the higher-scoring cluster", a
   store.finalize(created.id, "complete");
   store.patchJobs(created.id, { speakers: { status: "done", current: "speakers-v1.json" } });
   const dir = store.sessionDir(created.id);
-  writeToneWav(join(dir, "system.wav"), 8);
+  writeToneWav(join(dir, "system.wav"), 16);
   writeFileSync(
     join(dir, "speakers-v1.json"),
     `${JSON.stringify({
       speakers: ["小 A", "小 B"],
       clusters: [
         { speaker: "小 A", segments: [{ startMs: 0, endMs: 8000 }] },
-        { speaker: "小 B", segments: [{ startMs: 0, endMs: 8000 }] },
+        { speaker: "小 B", segments: [{ startMs: 8000, endMs: 16000 }] },
       ],
     })}\n`,
   );
@@ -198,7 +214,7 @@ test("identifySession gives a contested person to the higher-scoring cluster", a
   });
   const names = store.readNames(created.id);
   assert.equal(names["小 B"], "王明");
-  assert.equal(names["小 A"], undefined);
+  assert.equal(names["小 A"], "王明");
 });
 
 test("identifySession does not write names when speakers file is empty or illegal", async () => {

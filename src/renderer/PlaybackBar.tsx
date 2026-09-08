@@ -26,6 +26,10 @@ export function PlaybackBar({ playback, blocked, onOpen }: {
     const positionSec = draft;
     void run(() => window.earshot.seekPlayback({ sessionId: playback.sessionId, positionSec }));
   }
+  function skip(seconds: number) {
+    const positionSec = Math.max(0, Math.min(playback.durationSec, playback.positionSec + seconds));
+    void run(() => window.earshot.seekPlayback({ sessionId: playback.sessionId, positionSec }));
+  }
   const loading = playback.status === 'loading';
   const playing = playback.status === 'playing';
   const failed = playback.status === 'error';
@@ -39,6 +43,8 @@ export function PlaybackBar({ playback, blocked, onOpen }: {
       <button type="button" className="playback-title" title={playback.title} onClick={() => onOpen(playback.sessionId)}>
         <span>正在回听</span><strong>{playback.title}</strong>
       </button>
+      <button type="button" className="btn text" aria-label="后退 5 秒" disabled={busy || loading || failed || blocked}
+        onClick={() => skip(-5)}>−5 秒</button>
       <div className="playback-seek">
         <input type="range" aria-label="播放位置" aria-valuetext={`${formatClock(draft ?? playback.positionSec)}，共 ${formatClock(playback.durationSec)}`}
           min={0} max={playback.durationSec} step={0.1} value={draft ?? playback.positionSec}
@@ -48,6 +54,13 @@ export function PlaybackBar({ playback, blocked, onOpen }: {
           onBlur={seek} />
         <output>{formatClock(draft ?? playback.positionSec)} / {formatClock(playback.durationSec)}</output>
       </div>
+      <button type="button" className="btn text" aria-label="前进 5 秒" disabled={busy || loading || failed || blocked}
+        onClick={() => skip(5)}>+5 秒</button>
+      <select aria-label="播放速度" value={playback.rate} disabled={busy || loading || failed || blocked}
+        style={{ width: 'auto', minWidth: 70 }}
+        onChange={event => { const rate = Number(event.target.value); void run(() => window.earshot.setPlaybackRate(rate)); }}>
+        {[0.75, 1, 1.25, 1.5, 2].map(rate => <option key={rate} value={rate}>{rate}×</option>)}
+      </select>
       <button type="button" className="btn text" disabled={busy} onClick={() => void run(window.earshot.stopPlayback)}>结束回听</button>
     </div>
     {error || playback.error ? <p role="alert" className="playback-message">{error ?? playback.error}</p>

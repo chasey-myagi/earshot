@@ -2,6 +2,7 @@ import type { SessionJobs } from "../shared/types";
 
 /** work-bar 文案按实际 running 任务分支，不撒谎 */
 export function workBarMessage(jobs: SessionJobs): string {
+  if (jobs.waiting) return "等待前面的录音处理完成";
   const refined = jobs.refined === "running";
   const speakers = jobs.speakers === "running";
   if (refined && speakers) return "正在转写录音并区分说话人";

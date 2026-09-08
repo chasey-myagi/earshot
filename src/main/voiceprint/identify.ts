@@ -3,9 +3,9 @@ import { join } from "node:path";
 import type { SessionStore } from "../store/sessions.ts";
 import { hasAnyVoiceprint, readVoiceBook } from "./book.ts";
 import { defaultEmbed, type EmbedFn } from "./embed-run.ts";
-import { assignClusters } from "./match.ts";
-import { parseSpeakerClusters, selectClusterPcm } from "./select.ts";
-import { s16leToFloat32 } from "./wav.ts";
+import { assignClusters, type ClusterEmbedding } from "./match.ts";
+import { parseSpeakerClusters } from "./select.ts";
+import { voiceEvidence } from "./evidence.ts";
 
 export type { EmbedFn };
 
@@ -13,6 +13,7 @@ export async function identifySession(opts: {
   store: SessionStore;
   sessionId: string;
   embed?: EmbedFn;
+  signal?: AbortSignal;
 }): Promise<void> {
   try {
     await runIdentify(opts);
@@ -21,32 +22,36 @@ export async function identifySession(opts: {
   }
 }
 
-async function runIdentify(opts: { store: SessionStore; sessionId: string; embed?: EmbedFn }): Promise<void> {
+async function runIdentify(opts: { store: SessionStore; sessionId: string; embed?: EmbedFn; signal?: AbortSignal }): Promise<void> {
   if (!hasAnyVoiceprint(opts.store.rootDir)) return;
   const embed = opts.embed ?? defaultEmbed;
   const doc = opts.store.readSession(opts.sessionId);
   const speakersName = doc?.jobs.speakers.current;
   if (!speakersName) return;
   const dir = opts.store.sessionDir(opts.sessionId);
-  const wavPath = join(dir, "system.wav");
-  if (!existsSync(wavPath)) return;
   const clusters = parseSpeakerClusters(readJson(join(dir, speakersName)));
   if (clusters.length === 0) return;
   const names = opts.store.readNames(opts.sessionId);
   const pending = clusters.filter((cluster) => !names[cluster.speaker] && cluster.speaker !== "你");
   if (pending.length === 0) return;
 
-  const embeddings: { id: string; embedding: Float32Array }[] = [];
+  const embeddings: ClusterEmbedding[] = [];
   for (const cluster of pending) {
-    const pcm = selectClusterPcm(wavPath, cluster);
-    if (pcm.length < 16000 * 2) continue;
-    const embedding = await embed(s16leToFloat32(pcm));
-    if (embedding && embedding.length) embeddings.push({ id: cluster.speaker, embedding });
+    if (opts.signal?.aborted) return;
+    const wavPath = join(dir, cluster.track === "you" ? "mic.wav" : "system.wav");
+    if (!existsSync(wavPath)) continue;
+    const evidence = await voiceEvidence(wavPath, cluster, clusters, embed, { signal: opts.signal });
+    if (evidence.status === "ready") embeddings.push({ id: cluster.speaker,
+      embedding: evidence.embeddings[0]!, samples: evidence.embeddings });
   }
   const hits = assignClusters({ clusters: embeddings, people: readVoiceBook(opts.store.rootDir) });
   if (hits.length === 0) return;
+  const latest = opts.store.readSession(opts.sessionId);
+  if (opts.signal?.aborted || !latest || latest.jobs.speakers.current !== speakersName || latest.jobs.refined.current !== doc?.jobs.refined.current) return;
+  const currentNames = opts.store.readNames(opts.sessionId);
   const autoNames: Record<string, string> = {};
   for (const hit of hits) {
+    if (currentNames[hit.cluster]) continue;
     const result = opts.store.renameSpeaker({ sessionId: opts.sessionId, from: hit.cluster, to: hit.name });
     if (!result.ok) continue;
     autoNames[hit.cluster] = hit.name;

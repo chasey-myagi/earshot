@@ -3,6 +3,9 @@ export type JobStatus = "idle" | "running" | "canceling" | "canceled" | "done" |
 export type PermissionState = "undetermined" | "granted" | "denied";
 export type Track = "you" | "other";
 export type RealtimeStatus = "connecting" | "connected" | "disconnected" | "reconnecting";
+export type RealtimeFailureCategory = "transport" | "ready-timeout" | "provider-timeout" | "server" | "rate-limit" | "auth" | "quota" | "invalid-request" | "provider" | "task-finished";
+export type RealtimeTrackConnection = { status: RealtimeStatus; attempt: number; category?: RealtimeFailureCategory; retryDelayMs?: number };
+export type RealtimeConnectionDetail = { tracks: Record<Track, RealtimeTrackConnection> };
 export type CapturePhase = "idle" | "starting" | "recording" | "stopping" | "finalize_failed";
 
 export type PlaybackStatus = "loading" | "playing" | "paused" | "ended" | "error";
@@ -12,16 +15,18 @@ export type PlaybackState = {
   status: PlaybackStatus;
   positionSec: number;
   durationSec: number;
+  rate: number;
   warning?: string;
   error?: string;
 };
 export type PlaybackCommand = {
   id: number;
   token: string;
-  action: "load" | "pause" | "resume" | "seek" | "stop";
+  action: "load" | "pause" | "resume" | "seek" | "stop" | "rate";
   url?: string;
   positionSec?: number;
   resume?: boolean;
+  rate?: number;
 };
 export type PlaybackReport = {
   token: string;
@@ -29,10 +34,12 @@ export type PlaybackReport = {
   status: PlaybackStatus | "idle";
   positionSec: number;
   ack?: boolean;
+  rate?: number;
   error?: string;
 };
 
 export type SessionJobs = {
+  waiting?: boolean;
   live: JobStatus;
   refined: JobStatus;
   speakers: JobStatus;
@@ -60,9 +67,13 @@ export type TranscriptTurn = {
   tEndMs?: number;
   text: string;
   partial?: boolean;
+  correction?: import('./transcript-tools').TurnCorrectionMeta;
 };
 
 export type SessionDetail = SessionSummary & {
+  bookmarks?: import('./transcript-tools').Bookmark[];
+  transcriptToolsError?: string;
+  voiceRegistrations?: { name: string; status: "pending" | "running" | "remembered" | "insufficient" | "conflicting" | "unavailable" | "stale" }[];
   dictation?: DictationDocument;
   endedAt: string | null;
   turns: TranscriptTurn[];
@@ -74,16 +85,19 @@ export type RecordingLive = {
   elapsedSec: number;
   glanceVisible: boolean;
   connection?: RealtimeStatus;
+  connectionDetail?: RealtimeConnectionDetail;
   storageWarning?: string;
   phase?: CapturePhase;
   turns: TranscriptTurn[];
 };
 
 export type AppSnapshot = {
+  audioImport?: { phase: 'choosing' | 'decoding' | 'saving'; percent?: number; message: string };
   dictation?: import('./dictation').DictationState;
   shortcuts?: import('./dictation').ShortcutStatus;
   hasApiKey: boolean;
   autoDiarize: boolean;
+  sharedMicrophone?: boolean;
   permissions: { microphone: PermissionState; screen: PermissionState };
   recording: RecordingLive | null;
   playingSessionId: string | null;
@@ -93,6 +107,7 @@ export type AppSnapshot = {
   selectedId: string | null;
   selected: SessionDetail | null;
   libraryRequest?: number;
+  settingsRequest?: number;
   deletions?: { sessionId: string; title: string; expiresAt: number; error?: string }[];
 };
 
@@ -123,6 +138,20 @@ export type RetryJobInput = {
 export type PrivacyPane = "microphone" | "screen";
 
 export type EarshotApi = {
+  searchTranscripts: (input: import('./transcript-tools').TranscriptSearchInput) => Promise<import('./transcript-tools').TranscriptSearchResult>;
+  correctTurn: (input: import('./transcript-tools').CorrectTurnInput) => Promise<ActionResult>;
+  undoTurnCorrection: (input: import('./transcript-tools').TurnCorrectionInput) => Promise<ActionResult>;
+  resetTurnCorrection: (input: import('./transcript-tools').TurnCorrectionInput) => Promise<ActionResult>;
+  addBookmark: (input: import('./transcript-tools').AddBookmarkInput) => Promise<ActionResult>;
+  deleteBookmark: (input: import('./transcript-tools').DeleteBookmarkInput) => Promise<ActionResult>;
+  hotwordStatus: () => Promise<import('./hotwords').HotwordStatus>;
+  saveHotwords: (text: string) => Promise<import('./hotwords').HotwordStatus>;
+  syncHotwords: () => Promise<import('./hotwords').HotwordStatus>;
+  usageSummary: (period?: 'today' | 'month' | 'all') => Promise<import('./usage').UsageSummary>;
+  openBilling: () => Promise<void>;
+  importAudio: () => Promise<{ ok: true; canceled?: boolean; sessionId?: string } | { ok: false; error: string }>;
+  cancelAudioImport: () => Promise<void>;
+  setPlaybackRate: (rate: number) => Promise<ActionResult>;
   dictationSnapshot: () => Promise<import('./dictation').DictationState>;
   onDictation: (fn: (state: import('./dictation').DictationState) => void) => () => void;
   beginDictation: () => Promise<ActionResult>;
@@ -145,6 +174,7 @@ export type EarshotApi = {
   retryRealtime: () => Promise<ActionResult>;
   selectSession: (id: string) => Promise<void>;
   setAutoDiarize: (on: boolean) => Promise<void>;
+  setSharedMicrophone: (on: boolean) => Promise<void>;
   renameSpeaker: (input: RenameSpeakerInput) => Promise<RenameSpeakerResult>;
   undoSpeakerRename: (id: string) => Promise<ActionResult>;
   renameSession: (input: RenameSessionInput) => Promise<ActionResult>;

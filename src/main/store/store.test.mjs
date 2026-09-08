@@ -73,7 +73,10 @@ test("selected live detail includes the entire in-memory draft while history kee
   const snap = assembleSnapshot(store, runtime);
   assert.deepEqual(snap.selected.turns, turns);
   assert.equal(snap.selected.turns[0].text, "完整稿 0");
-  assert.deepEqual(assembleSnapshot(store, { ...runtime, selectedId: "history" }).selected.turns, [historicalTurn]);
+  const historical = assembleSnapshot(store, { ...runtime, selectedId: "history" }).selected.turns;
+  assert.deepEqual(historical.map(({ correction, ...turn }) => turn), [historicalTurn]);
+  assert.equal(historical[0].correction.originalText, historicalTurn.text);
+  assert.equal(historical[0].correction.edited, false);
   assert.deepEqual(assembleSnapshot(store, runtime).selected.turns, turns);
 });
 
@@ -163,7 +166,7 @@ test("renameSpeaker writes names.json and people.json", () => {
   const created = store.createRecording();
   const result = store.renameSpeaker({ sessionId: created.id, from: "小 A", to: "王明" });
   assert.equal(result.ok, true);
-  const names = JSON.parse(readFileSync(join(root, "sessions", created.id, "names.json"), "utf8"));
+  const names = createSessionStore(root).readNames(created.id);
   const people = JSON.parse(readFileSync(join(root, "people.json"), "utf8"));
   assert.equal(names["小 A"], "王明");
   assert.deepEqual(people, ["王明"]);
@@ -196,7 +199,7 @@ test("renameSpeaker follows a previous rename and appends people.json", () => {
   store.renameSpeaker({ sessionId: created.id, from: "小 A", to: "王明" });
   const again = store.renameSpeaker({ sessionId: created.id, from: "王明", to: "李雷" });
   assert.equal(again.ok, true);
-  const names = JSON.parse(readFileSync(join(root, "sessions", created.id, "names.json"), "utf8"));
+  const names = createSessionStore(root).readNames(created.id);
   const people = JSON.parse(readFileSync(join(root, "people.json"), "utf8"));
   assert.equal(names["小 A"], "李雷");
   assert.equal(names["王明"], "李雷");

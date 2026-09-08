@@ -357,7 +357,7 @@ test("transcribeFile throws when submit returns no task_id", async () => {
           return new Response("no", { status: 404 });
         },
       }),
-    /转写任务没提交上/,
+    /提交结果未知/,
   );
 });
 
@@ -489,7 +489,7 @@ test("transcribeFile rejects immediately when aborted during hung upload", async
         );
       }
       if (url === "https://dashscope-file-bj.oss-cn-beijing.aliyuncs.com/upload") {
-        assert.equal(init?.signal, ac.signal);
+        assert.ok(init?.signal instanceof AbortSignal);
         uploadStarted();
         return new Promise(() => undefined);
       }
@@ -576,6 +576,164 @@ for (const status of [401,429,500]) {
       if(String(input).includes('/tasks/')){polls++;return Response.json({message:'credential-echo-must-stay-private'},{status});}
       return cloud(input,init);
     }}),error=>String(error).includes(String(status))&&!String(error).includes('credential-echo'));
-    assert.equal(polls,1);
+    assert.equal(polls,status === 401 ? 1 : 4);
   });
 }
+
+test('temporary poll failure recovers without submitting another paid task', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'earshot-retry-')); t.after(() => rmSync(dir, {recursive:true,force:true}));
+  const filePath = join(dir, 'audio.wav'); writeFileSync(filePath, Buffer.alloc(64));
+  const cloud = asrFetch(); let polls = 0; let submissions = 0;
+  const rows = await transcribeFile({apiKey:'fixture-only',filePath,diarize:true,sleep:async()=>{},fetchImpl:async(input,init)=>{
+    if(String(input).includes('/transcription')) submissions++;
+    if(String(input).includes('/tasks/') && ++polls === 1) return new Response('',{status:503});
+    return cloud(input,init);
+  }});
+  assert.equal(rows[0].text,'好'); assert.equal(submissions,1);
+});
+
+test('restart resumes a saved task and reuses its completed result without uploading again', async t => {
+  const dir=mkdtempSync(join(tmpdir(),'earshot-resume-')); t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const filePath=join(dir,'audio.wav'), checkpointPath=join(dir,'task.json'); writeFileSync(filePath,Buffer.alloc(64));
+  const cloud=asrFetch(); const ac=new AbortController();
+  await assert.rejects(transcribeFile({apiKey:'fixture-only',filePath,checkpointPath,diarize:true,signal:ac.signal,sleep:async()=>{ac.abort();},fetchImpl:cloud}),/已取消/);
+  const resume=async(input,init)=>{
+    assert.ok(!String(input).includes('/uploads') && init.method !== 'POST','resumption must not upload or submit');
+    return cloud(input,init);
+  };
+  const rows=await transcribeFile({apiKey:'fixture-only',filePath,checkpointPath,diarize:true,sleep:async()=>{},fetchImpl:resume});
+  assert.equal(rows[0].text,'好');
+  assert.deepEqual(await transcribeFile({apiKey:'fixture-only',filePath,checkpointPath,diarize:true,fetchImpl:async()=>{throw Error('completed result must be local');}}),rows);
+});
+
+test('malformed cloud results fail explicitly while a no-words subtask is valid silence', async t => {
+  assert.throws(()=>parseTranscriptionFile({unexpected:[]}),/格式/);
+  const dir=mkdtempSync(join(tmpdir(),'earshot-silence-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const filePath=join(dir,'audio.wav');writeFileSync(filePath,Buffer.alloc(64));const cloud=asrFetch();
+  assert.deepEqual(await transcribeFile({apiKey:'fixture-only',filePath,diarize:true,sleep:async()=>{},fetchImpl:async(input,init)=>{
+    if(String(input).includes('/tasks/'))return Response.json({output:{task_status:'FAILED',results:[{subtask_status:'FAILED',code:'ASR_RESPONSE_HAVE_NO_WORDS'}]}});
+    return cloud(input,init);
+  }}),[]);
+});
+
+test('a hung response body times out and uncertain submission is not automatically repeated', async t => {
+  const dir=mkdtempSync(join(tmpdir(),'earshot-hung-body-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const filePath=join(dir,'audio.wav'),checkpointPath=join(dir,'task.json');writeFileSync(filePath,Buffer.alloc(64));const cloud=asrFetch();
+  await assert.rejects(transcribeFile({apiKey:'fixture-only',filePath,checkpointPath,diarize:false,requestTimeoutMs:10,fetchImpl:async(input,init)=>{
+    if(String(input).includes('/transcription'))return new Response(new ReadableStream({start(){}}));
+    return cloud(input,init);
+  }}),/提交结果未知/);
+  await assert.rejects(transcribeFile({apiKey:'fixture-only',filePath,checkpointPath,diarize:false,fetchImpl:async()=>{assert.fail('must not resubmit');}}),/提交结果未知/);
+});
+
+test('expired saved tasks fail clearly then permit an explicit retry to submit fresh audio', async t => {
+  const dir=mkdtempSync(join(tmpdir(),'earshot-expired-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const filePath=join(dir,'audio.wav'),checkpointPath=join(dir,'task.json');writeFileSync(filePath,Buffer.alloc(64));const cloud=asrFetch();const ac=new AbortController();
+  await assert.rejects(transcribeFile({apiKey:'fixture-only',filePath,checkpointPath,diarize:false,signal:ac.signal,sleep:async()=>ac.abort(),fetchImpl:cloud}));
+  await assert.rejects(transcribeFile({apiKey:'fixture-only',filePath,checkpointPath,diarize:false,sleep:async()=>{},fetchImpl:async()=>new Response('',{status:404})}),/过期/);
+  const rows=await transcribeFile({apiKey:'fixture-only',filePath,checkpointPath,diarize:false,retryUncertainSubmission:true,sleep:async()=>{},fetchImpl:cloud});
+  assert.equal(rows[0].text,'好');
+});
+
+test('saved diagnostics identify the failed stage without storing API keys or provider messages', async t => {
+  const dir=mkdtempSync(join(tmpdir(),'earshot-diagnostics-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const filePath=join(dir,'audio.wav'),checkpointPath=join(dir,'task.json');writeFileSync(filePath,Buffer.alloc(64));const cloud=asrFetch();
+  await assert.rejects(transcribeFile({apiKey:'fixture-private-key',filePath,checkpointPath,diarize:false,sleep:async()=>{},fetchImpl:async(input,init)=>{
+    if(String(input).includes('/tasks/'))return Response.json({message:'fixture-private-key'},{status:503});
+    return cloud(input,init);
+  }}));
+  const {readFileSync}=await import('node:fs');const raw=readFileSync(checkpointPath,'utf8'),journal=JSON.parse(raw);
+  assert.ok(!raw.includes('fixture-private-key'));assert.equal(journal.diagnostics.at(-1).stage,'poll');assert.equal(journal.diagnostics.at(-1).httpStatus,503);
+});
+
+for (const bad of ['{', {}, {stage:'bogus'}, {stage:'poll'}, {stage:'done',rows:[{text:'ok',tStartMs:-1}]}]) {
+  test(`damaged checkpoint blocks every network call: ${JSON.stringify(bad)}`, async t => {
+    const {audioKey}=await import('./asr-checkpoint.ts');
+    const dir=mkdtempSync(join(tmpdir(),'earshot-corrupt-checkpoint-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+    const filePath=join(dir,'audio.wav'),checkpointPath=join(dir,'task.json');writeFileSync(filePath,Buffer.alloc(64));
+    const key=await audioKey(filePath,true);
+    writeFileSync(checkpointPath,typeof bad==='string'?bad:JSON.stringify({key,...bad}));
+    let calls=0;
+    await assert.rejects(transcribeFile({apiKey:'fixture-only',filePath,checkpointPath,diarize:true,fetchImpl:async()=>{calls++;throw Error('unexpected');}}),/任务记录损坏/);
+    assert.equal(calls,0);
+  });
+}
+
+for (const change of ['audio','diarize']) test(`checkpoint identity isolates a changed ${change}`, async t => {
+  const dir=mkdtempSync(join(tmpdir(),'earshot-changed-source-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const filePath=join(dir,'audio.wav'),checkpointPath=join(dir,'task.json');writeFileSync(filePath,Buffer.alloc(64));
+  let submissions=0;const cloud=asrFetch();
+  const fetchImpl=async(input,init)=>{if(String(input).endsWith('/transcription'))submissions++;return cloud(input,init);};
+  const run=diarize=>transcribeFile({apiKey:'fixture-only',filePath,checkpointPath,diarize,sleep:async()=>{},fetchImpl});
+  await run(true);await run(true);assert.equal(submissions,1);
+  if(change==='audio')writeFileSync(filePath,Buffer.alloc(64,1));
+  await run(change==='diarize'?false:true);assert.equal(submissions,2);
+});
+
+for (const stage of ['policy','poll','download']) for (const failure of ['network','timeout','http']) {
+  test(`${stage} GET recovers from ${failure} without duplicate paid submission`, async t => {
+    const dir=mkdtempSync(join(tmpdir(),'earshot-get-recovery-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+    const filePath=join(dir,'audio.wav');writeFileSync(filePath,Buffer.alloc(64));
+    const cloud=asrFetch();let attempts=0,submissions=0;const waits=[];
+    const result=await transcribeFile({apiKey:'fixture-only',filePath,diarize:true,requestTimeoutMs:10,sleep:async ms=>{waits.push(ms);},fetchImpl:async(input,init)=>{
+      const url=String(input);if(url.endsWith('/transcription'))submissions++;
+      const target=stage==='policy'?url.includes('getPolicy'):stage==='poll'?url.includes('/tasks/'):url.startsWith('https://dashscope-result-');
+      if(target&&++attempts===1){
+        if(failure==='network')throw Error('connection reset');
+        if(failure==='timeout')return new Promise(()=>{});
+        return new Response('',{status:429,headers:{'Retry-After':'999999'}});
+      }
+      return cloud(input,init);
+    }});
+    assert.equal(result[0].text,'好');assert.equal(attempts,2);assert.equal(submissions,1);
+    assert.ok(waits.every(ms=>ms<=30000));if(failure==='http')assert.ok(waits.includes(30000));
+  });
+}
+
+test('canceling during backoff settles without sending a retry', async t => {
+  const dir=mkdtempSync(join(tmpdir(),'earshot-backoff-abort-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const filePath=join(dir,'audio.wav');writeFileSync(filePath,Buffer.alloc(64));let calls=0;const ac=new AbortController();
+  await assert.rejects(transcribeFile({apiKey:'fixture-only',filePath,diarize:true,signal:ac.signal,
+    fetchImpl:async()=>{calls++;return new Response('',{status:503});},sleep:async()=>{ac.abort();}}),/已取消/);
+  assert.equal(calls,1);
+});
+
+for(const failure of ['network','http']) test(`unknown POST ${failure} requires explicit retry, which submits once`,async t=>{
+  const dir=mkdtempSync(join(tmpdir(),'earshot-unknown-submit-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const filePath=join(dir,'audio.wav'),checkpointPath=join(dir,'task.json');writeFileSync(filePath,Buffer.alloc(64));
+  const cloud=asrFetch();let submissions=0;
+  const opts={apiKey:'fixture-only',filePath,checkpointPath,diarize:true,sleep:async()=>{},fetchImpl:async(input,init)=>{
+    if(String(input).endsWith('/transcription')){submissions++;if(failure==='network')throw Error('connection lost');return new Response('',{status:503});}
+    return cloud(input,init);
+  }};
+  await assert.rejects(transcribeFile(opts),/提交结果未知/);
+  await assert.rejects(transcribeFile({...opts,fetchImpl:async()=>assert.fail('reopening must not submit')}),/提交结果未知/);
+  assert.equal(submissions,1);
+  await transcribeFile({...opts,retryUncertainSubmission:true,fetchImpl:async(input,init)=>{if(String(input).endsWith('/transcription'))submissions++;return cloud(input,init);}});
+  assert.equal(submissions,2);
+});
+
+test('a terminal paid task cannot be automatically submitted again on restart',async t=>{
+  const dir=mkdtempSync(join(tmpdir(),'earshot-terminal-resume-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const filePath=join(dir,'audio.wav'),checkpointPath=join(dir,'task.json');writeFileSync(filePath,Buffer.alloc(64));const cloud=asrFetch();
+  await assert.rejects(transcribeFile({apiKey:'fixture-only',filePath,checkpointPath,diarize:true,sleep:async()=>{},fetchImpl:async(input,init)=>{
+    if(String(input).includes('/tasks/'))return Response.json({output:{task_status:'FAILED'}});
+    return cloud(input,init);
+  }}),/转写失败/);
+  let calls=0;
+  await assert.rejects(transcribeFile({apiKey:'fixture-only',filePath,checkpointPath,diarize:true,sleep:async()=>{},fetchImpl:async()=>{calls++;throw Error('must not resubmit');}}),/手动重试/);
+  assert.equal(calls,0);
+});
+
+test('a completed text result with incomplete speakers is reused after restart without payment',async t=>{
+  const dir=mkdtempSync(join(tmpdir(),'earshot-incomplete-resume-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const filePath=join(dir,'audio.wav'),checkpointPath=join(dir,'task.json');writeFileSync(filePath,Buffer.alloc(64));const cloud=asrFetch();
+  const opts={apiKey:'fixture-only',filePath,checkpointPath,diarize:true,sleep:async()=>{}};
+  const expected=await transcribeFile({...opts,fetchImpl:async(input,init)=>{
+    if(String(input).startsWith('https://dashscope-result-'))return Response.json({sentences:[{begin_time:0,end_time:1000,text:'保留的文字'}]});
+    return cloud(input,init);
+  }});
+  let calls=0;
+  const resumed=await transcribeFile({...opts,fetchImpl:async()=>{calls++;throw Error('must not resubmit');}});
+  assert.deepEqual(resumed,expected);assert.equal(calls,0);
+});

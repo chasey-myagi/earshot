@@ -113,6 +113,6 @@ test("other cloud failures remain failures and preserve original audio", async (
     /服务暂不可用/,
   );
   assert.deepEqual(await process(f), {
-    refinedStatus: "failed", speakersStatus: "failed", turns: null, speakers: null, originalAudioUnchanged: true,
+    refinedStatus: "failed", speakersStatus: "done", turns: [systemTurn], speakers: ["小 A"], originalAudioUnchanged: true,
   });
 });

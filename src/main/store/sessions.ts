@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ActionResult, JobStatus, RenameSpeakerInput, SessionDetail, SessionJobs, SessionSummary } from "../../shared/types";
 import type { Prefs, SessionDocument } from "./schema";
 import { sessionTranscript } from "./transcript.ts";
+import { changeBookmark, changeTurn, readBookmarks, readCorrectedTurns, searchDetails } from "./transcript-tools.ts";
+import type { TranscriptSearchResult } from "../../shared/transcript-tools";
 import { repairSessionWavs, sessionDurationSec, sessionHasWavBody } from "./wav.ts";
+
+import { writeJson } from "./json.ts";
+import { readRegistrations } from "../voiceprint/registration.ts";
 
 const DEFAULT_PREFS: Prefs = { autoDiarize: true };
 
@@ -12,18 +17,6 @@ function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-function writeJson(path: string, value: unknown): void {
-  // A failed or partial write must leave the last committed document readable.
-  // Keep honoring an explicitly read-only existing file when replacing it.
-  if (existsSync(path)) accessSync(path, constants.W_OK);
-  const pending = `${path}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(pending, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: "wx" });
-    renameSync(pending, path);
-  } finally {
-    try { rmSync(pending, { force: true }); } catch { /* preserve the original IO error */ }
-  }
-}
 
 function asDocument(raw: unknown): SessionDocument | null {
   if (!raw || typeof raw !== "object") return null;
@@ -41,8 +34,9 @@ function asDocument(raw: unknown): SessionDocument | null {
     durationSec: typeof row.durationSec === "number" ? row.durationSec : 0,
     status: row.status === "complete" || row.status === "incomplete" || row.status === "recording" ? row.status : "incomplete",
     ...(typeof row.autoDiarize === "boolean" ? { autoDiarize: row.autoDiarize } : {}),
+    ...(typeof row.sharedMicrophone === "boolean" ? { sharedMicrophone: row.sharedMicrophone } : {}),
     audio: { sampleRate: 16000, channels: 1, codec: "pcm_s16le" },
-    tracks: { microphone: true, system: true },
+    tracks: { microphone: row.tracks?.microphone !== false, system: row.tracks?.system !== false },
     jobs: {
       live: row.jobs?.live === "running" || row.jobs?.live === "done" || row.jobs?.live === "failed" ? row.jobs.live : "idle",
       refined: {
@@ -64,6 +58,7 @@ function toJobs(doc: SessionDocument): SessionJobs {
     live: doc.jobs.live,
     refined: doc.jobs.refined.status,
     speakers: doc.jobs.speakers.status,
+    ...([doc.jobs.refined, doc.jobs.speakers].some(job => job.status === "running" && job.reason === "等待处理") ? { waiting: true } : {}),
     ...(doc.jobs.refined.status === "failed" && doc.jobs.refined.reason ? { failedReason: doc.jobs.refined.reason } : {}),
     ...(doc.jobs.speakers.status === "failed" && doc.jobs.speakers.reason ? { speakersFailReason: doc.jobs.speakers.reason } : {}),
   };
@@ -90,14 +85,27 @@ export function createSessionStore(rootDir: string) {
   const sessionsRoot = join(rootDir, "sessions");
   let listed: SessionDocument[] | null = null;
   const details = new Map<string, { detail: SessionDetail; live: string }>();
+  const bookmarkStates = new Map<string, { stamp: string; value: Pick<SessionDetail, 'bookmarks' | 'transcriptToolsError'> }>();
 
-  function liveKey(id: string): string {
-    try {
-      const st = statSync(join(sessionDir(id), "live.jsonl"));
-      return `${st.size}:${st.mtimeMs}`;
-    } catch {
-      return "";
-    }
+  function readBookmarkState(id: string): Pick<SessionDetail, 'bookmarks' | 'transcriptToolsError'> {
+    let stamp = 'missing';
+    try { const stat = statSync(join(sessionDir(id), 'bookmarks.json')); stamp = `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`; } catch {}
+    const cached = bookmarkStates.get(id);
+    if (cached?.stamp === stamp) return cached.value;
+    let value: Pick<SessionDetail, 'bookmarks' | 'transcriptToolsError'>;
+    try { value = { bookmarks: readBookmarks(sessionDir(id)) }; }
+    catch { value = { bookmarks: [], transcriptToolsError: '标记记录无法读取；原文件已保留。' }; }
+    bookmarkStates.set(id, { stamp, value });
+    return value;
+  }
+
+  function liveKey(id: string, doc: SessionDocument): string {
+    return ["live.jsonl", "names.json", "corrections.json", "bookmarks.json", doc.jobs.refined.current]
+      .map(file => {
+        if (!file) return "";
+        try { const st = statSync(join(sessionDir(id), file)); return `${file}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`; }
+        catch { return `${file}:missing`; }
+      }).join("|");
   }
 
   function forgetListed(): void {
@@ -105,8 +113,8 @@ export function createSessionStore(rootDir: string) {
   }
 
   function forgetDetails(id?: string): void {
-    if (id) details.delete(id);
-    else details.clear();
+    if (id) { details.delete(id); bookmarkStates.delete(id); }
+    else { details.clear(); bookmarkStates.clear(); }
   }
 
   function ensure(): void {
@@ -138,7 +146,7 @@ export function createSessionStore(rootDir: string) {
     if (!existsSync(prefsPath())) return { ...DEFAULT_PREFS };
     try {
       const raw = readJson(prefsPath()) as Partial<Prefs>;
-      return { autoDiarize: raw.autoDiarize !== false };
+      return { autoDiarize: raw.autoDiarize !== false, ...(typeof raw.sharedMicrophone === "boolean" ? { sharedMicrophone: raw.sharedMicrophone } : {}) };
     } catch {
       return { ...DEFAULT_PREFS };
     }
@@ -146,7 +154,12 @@ export function createSessionStore(rootDir: string) {
 
   function setAutoDiarize(on: boolean): void {
     ensure();
-    writeJson(prefsPath(), { autoDiarize: on });
+    writeJson(prefsPath(), { ...readPrefs(), autoDiarize: on });
+  }
+
+  function setSharedMicrophone(on: boolean): void {
+    ensure();
+    writeJson(prefsPath(), { ...readPrefs(), sharedMicrophone: on });
   }
 
   function readPeople(): string[] {
@@ -166,12 +179,23 @@ export function createSessionStore(rootDir: string) {
     forgetDetails();
   }
 
+  function namesArtifact(id: string): string {
+    const doc = readSession(id);
+    return JSON.stringify([doc?.jobs.refined.current, doc?.jobs.speakers.current]);
+  }
+
   function readNames(id: string): Record<string, string> {
     const path = namesFile(id);
     if (!existsSync(path)) return {};
     try {
-      const raw = readJson(path);
+      let raw = readJson(path);
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+      if ("schema_version" in raw && raw.schema_version === 2) {
+        const binding = raw as { artifact?: unknown; names?: unknown };
+        if (binding.artifact !== namesArtifact(id)) return {};
+        raw = binding.names;
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+      }
       const out: Record<string, string> = {};
       for (const [from, to] of Object.entries(raw as Record<string, unknown>)) {
         if (typeof to === "string" && to.trim()) out[from] = to;
@@ -223,23 +247,70 @@ export function createSessionStore(rootDir: string) {
     return listDocuments().map(toSummary);
   }
 
+  function transcriptSource(doc: SessionDocument) {
+    const dir = sessionDir(doc.id);
+    return { sessionId: doc.id, dir, artifact: JSON.stringify([doc.kind ?? "recording", doc.jobs.refined.current, doc.jobs.speakers.current]),
+      turns: doc.kind === "dictation" && doc.dictation ? [{ id: "dictation", track: "you" as const, speaker: "你", tStartMs: 0, text: doc.dictation.text }] : sessionTranscript(dir, doc.jobs.refined.current, {}),
+      names: readNames(doc.id) };
+  }
+
   function getDetail(id: string): SessionDetail | null {
-    const live = liveKey(id);
-    const cached = details.get(id);
-    if (cached && cached.live === live) return cached.detail;
     const doc = readSession(id);
     if (!doc) return null;
+    const live = liveKey(id, doc);
+    const cached = details.get(id);
+    if (cached && cached.live === live) return cached.detail;
     const names = readNames(id);
+    const corrected = readCorrectedTurns(transcriptSource(doc));
+    let bookmarks: import("../../shared/transcript-tools").Bookmark[] = [];
+    let toolsError = corrected.error;
+    try { bookmarks = readBookmarks(sessionDir(id)); }
+    catch { toolsError = [toolsError, "标记记录无法读取；原文件已保留。"].filter(Boolean).join(" "); }
     const people = [...new Set([...readPeople(), ...Object.values(names)])];
     const detail: SessionDetail = {
       ...toSummary(doc),
       endedAt: doc.endedAt,
-      turns: doc.kind === "dictation" && doc.dictation ? [{ id: "dictation", track: "you", speaker: "你", tStartMs: 0, text: doc.dictation.text }] : sessionTranscript(sessionDir(id), doc.jobs.refined.current, names),
-      ...(doc.dictation ? { dictation: doc.dictation } : {}),
+      turns: corrected.turns,
+      bookmarks,
+      ...(toolsError ? { transcriptToolsError: toolsError } : {}),
+      ...(doc.dictation ? { dictation: { ...doc.dictation, text: corrected.turns[0]?.text ?? doc.dictation.text } } : {}),
       people: doc.kind === "dictation" ? [] : people,
+      voiceRegistrations: Object.entries(readRegistrations(sessionDir(id)))
+        .filter(([root, record]) => record.artifact === namesArtifact(id) && names[root] === record.name)
+        .map(([, record]) => ({ name: record.name, status: record.status })),
     };
     details.set(id, { detail, live });
     return detail;
+  }
+
+  function correctTranscriptTurn(raw: unknown, action: "correct" | "undo" | "reset"): ActionResult {
+    const id = raw && typeof raw === "object" ? (raw as { sessionId?: unknown }).sessionId : undefined;
+    if (!isSessionId(id)) return { ok: false, error: "找不到这场会" };
+    const doc = readSession(id);
+    if (!doc) return { ok: false, error: "找不到这场会" };
+    const result = changeTurn(transcriptSource(doc), raw, action);
+    if (result.ok) forgetDetails(id);
+    return result;
+  }
+
+  function bookmarkAction(raw: unknown, action: "add" | "delete"): ActionResult {
+    const id = raw && typeof raw === "object" ? (raw as { sessionId?: unknown }).sessionId : undefined;
+    if (!isSessionId(id)) return { ok: false, error: "找不到这场会" };
+    const doc = readSession(id);
+    if (!doc || doc.kind === "dictation") return { ok: false, error: "这条记录没有可标记的录音" };
+    const maxTimeMs = doc.status === "recording" ? Math.max(0, Date.now() - Date.parse(doc.startedAt)) : Math.max(0, Math.round(doc.durationSec * 1000));
+    const result = changeBookmark(sessionDir(id), raw, action, maxTimeMs);
+    if (result.ok) forgetDetails(id);
+    return result;
+  }
+
+  function searchTranscripts(raw: unknown): TranscriptSearchResult {
+    // Scan the current library lazily: corrections and names have one source of truth,
+    // and deleted sessions cannot linger in a separate search index.
+    function* currentDetails() {
+      for (const summary of listSummaries()) { const detail = getDetail(summary.id); if (detail) yield detail; }
+    }
+    return searchDetails(raw, currentDetails());
   }
 
   function createRecording(): SessionDocument {
@@ -255,6 +326,7 @@ export function createSessionStore(rootDir: string) {
       durationSec: 0,
       status: "recording",
       autoDiarize: readPrefs().autoDiarize,
+      ...(readPrefs().sharedMicrophone ? { sharedMicrophone: true } : {}),
       audio: { sampleRate: 16000, channels: 1, codec: "pcm_s16le" },
       tracks: { microphone: true, system: true },
       jobs: {
@@ -383,7 +455,7 @@ export function createSessionStore(rootDir: string) {
       if (value === from) names[key] = to;
     }
     names[from] = to;
-    writeJson(namesFile(input.sessionId), names);
+    writeNames(input.sessionId, names);
     const people = readPeople();
     if (!people.includes(to)) people.push(to);
     writePeople(people);
@@ -392,7 +464,7 @@ export function createSessionStore(rootDir: string) {
 
   function writeNames(id: string, names: Record<string, string>): void {
     if (!readSession(id)) throw new Error("Session not found");
-    writeJson(namesFile(id), names);
+    writeJson(namesFile(id), { schema_version: 2, artifact: namesArtifact(id), names });
     forgetDetails(id);
   }
 
@@ -403,14 +475,23 @@ export function createSessionStore(rootDir: string) {
 
   return {
     rootDir,
+    invalidateDetail: forgetDetails,
     sessionDir,
     readPrefs,
     setAutoDiarize,
+    setSharedMicrophone,
     readPeople,
     readSession,
     writeSession,
     listSummaries,
     getDetail,
+    readBookmarkState,
+    correctTurn: (raw: unknown) => correctTranscriptTurn(raw, "correct"),
+    undoTurnCorrection: (raw: unknown) => correctTranscriptTurn(raw, "undo"),
+    resetTurnCorrection: (raw: unknown) => correctTranscriptTurn(raw, "reset"),
+    searchTranscripts,
+    addBookmark: (raw: unknown) => bookmarkAction(raw, "add"),
+    deleteBookmark: (raw: unknown) => bookmarkAction(raw, "delete"),
     readNames,
     writeNames,
     rememberPerson,

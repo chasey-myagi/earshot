@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ActionResult, PlaybackCommand, PlaybackReport, PlaybackState } from '../shared/types';
 import { audioResponse, openSessionAudio, type SessionAudio } from './playback-audio.ts';
 
-type Pending = { id: number; action: PlaybackCommand['action']; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
+type Pending = { id: number; action: PlaybackCommand['action']; rate: number; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 
 /** Main owns authorization; one Chromium media element owns the playback clock. */
 export function createPlaybackController(options: {
@@ -16,6 +16,7 @@ export function createPlaybackController(options: {
   let authorized = false;
   let revocation = new AbortController();
   let ready = false;
+  let rate = 1;
   let commandId = 0;
   let pending: Pending | null = null;
   let queue: Promise<unknown> = Promise.resolve();
@@ -43,7 +44,7 @@ export function createPlaybackController(options: {
       const timer = setTimeout(() => {
         rejectPending(new Error(action === 'stop' ? '回听尚未停止，请关闭回听后重试录音' : '回听没有响应，请重试'));
       }, options.timeoutMs ?? (action === 'load' ? 10000 : 2000));
-      pending = { id, action, resolve, reject, timer };
+      pending = { id, action, rate: extra.rate ?? state?.rate ?? rate, resolve, reject, timer };
       try { options.send({ ...extra, action, id, token: token! }); }
       catch (error) { rejectPending(error instanceof Error ? error : new Error('回听界面不可用')); }
     }).catch(error => { fail(error); throw error; });
@@ -67,9 +68,9 @@ export function createPlaybackController(options: {
     if (!hasPosition(positionSec, next.durationSec)) throw new Error('无效的回听位置');
     revoke(); revocation = new AbortController();
     audio = next; token = randomUUID(); authorized = true;
-    state = { sessionId, title, status: 'loading', positionSec, durationSec: next.durationSec, warning: next.warning };
+    state = { sessionId, title, status: 'loading', positionSec, durationSec: next.durationSec, rate, warning: next.warning };
     changed();
-    await send('load', { url: `earshot-audio://session/${token}`, positionSec });
+    await send('load', { url: `earshot-audio://session/${token}`, positionSec, rate });
   }
   return {
     snapshot: (): PlaybackState | null => state ? { ...state } : null,
@@ -104,6 +105,12 @@ export function createPlaybackController(options: {
       if (!state) throw new Error('没有正在回听的录音');
       await send(state.status === 'ended' ? 'seek' : 'resume', state.status === 'ended' ? { positionSec: 0, resume: true } : {});
     }); },
+    setRate(nextRate: number): Promise<ActionResult> { return action(async () => {
+      if (![0.75, 1, 1.25, 1.5, 2].includes(nextRate)) throw new Error('请选择有效的播放速度');
+      if (!state || state.status === 'error') throw new Error('请先打开一段录音');
+      await send('rate', { rate: nextRate });
+      rate = nextRate;
+    }); },
     stopAndWait(): Promise<void> {
       return serial(async () => {
         if (!state || !token) return;
@@ -118,14 +125,16 @@ export function createPlaybackController(options: {
       if (report.token !== token || report.commandId !== commandId || typeof report.positionSec !== 'number' ||
           !hasPosition(report.positionSec, state.durationSec + 0.05) ||
           !['loading', 'playing', 'paused', 'ended', 'error', 'idle'].includes(report.status ?? '')) return;
+      if (report.status !== 'idle' && report.status !== 'error' && report.rate !== (pending?.rate ?? state.rate)) return;
       if (report.status !== 'idle') {
         state = { ...state, status: report.status!, positionSec: Math.min(report.positionSec, state.durationSec),
+          rate: report.status === 'error' ? state.rate : report.rate!,
           error: report.status === 'error' ? '音频无法播放，请重新打开回听' : undefined };
         changed();
       }
       const expectedAck = report.status === 'error' || (pending?.action === 'stop' ? report.status === 'idle'
         : pending?.action === 'pause' ? report.status === 'paused' || report.status === 'ended'
-          : pending?.action === 'seek' ? ['paused','playing','ended'].includes(report.status!)
+          : pending?.action === 'seek' || pending?.action === 'rate' ? ['paused','playing','ended'].includes(report.status!)
             : ['playing','ended'].includes(report.status!));
       if (report.ack === true && pending?.id === report.commandId && expectedAck) {
         const current = pending; pending = null; clearTimeout(current.timer);

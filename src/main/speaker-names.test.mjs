@@ -96,7 +96,7 @@ for (const kind of ['refined', 'speakers', 'new-job']) {
     assert.equal(names.undo(op.undoId).ok, false);
     t.mock.timers.tick(9000); await Promise.resolve();
     assert.deepEqual(calls, []);
-    assert.equal(store.readNames(id)['小 A'], '王明');
+    assert.equal(store.readNames(id)['小 A'], kind === 'new-job' ? '王明' : undefined);
   });
 }
 
@@ -174,6 +174,7 @@ async function observeCrossSessionReuse(t, { root, store, sessionId, names }) {
   // More than the complete 8-second undo period since the last user action.
   t.mock.timers.tick(9000);
   await settleAsyncWork();
+  await waitFor(()=>readVoiceBook(root).length>0);
   const afterExpiry = {
     people: store.readPeople(),
     voiceNames: readVoiceBook(root).map(person => person.name),
@@ -201,6 +202,24 @@ const reusableWang = {
   nextSession: { candidateNames: ['王明'], matchedSpeaker: '王明' },
 };
 
+test('quitting during the undo window preserves enrollment for the next launch', async t => {
+  const {root,store,sessionId,names}=registrationFixture(t);
+  names.rename({sessionId,from:'小 A',to:'王明'});names.close();
+  const reopened=createSpeakerNames({store:createSessionStore(root),enroll:input=>enrollSpeaker({...input,embed:embedSameSpeaker})});t.after(()=>reopened.close());
+  t.mock.timers.tick(9000);await waitFor(()=>readVoiceBook(root).length>0);
+  assert.deepEqual(readVoiceBook(root).map(person=>person.name),['王明']);
+});
+
+test('registration failure is visible after reopening and retrying the same name can remember its voice', async t => {
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:1000});const root=mkdtempSync(join(tmpdir(),'earshot-registration-status-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const store=createSessionStore(root),sessionId=completedSession(store);let available=false;
+  const names=createSpeakerNames({store,enroll:input=>enrollSpeaker({...input,embed:async()=>available?new Float32Array([1,0]):null})});t.after(()=>names.close());
+  names.rename({sessionId,from:'小 A',to:'王明'});t.mock.timers.tick(9000);await waitFor(()=>createSessionStore(root).getDetail(sessionId).voiceRegistrations?.[0]?.status==='unavailable');
+  assert.deepEqual(createSessionStore(root).getDetail(sessionId).voiceRegistrations,[{name:'王明',status:'unavailable'}]);
+  available=true;assert.equal(names.rename({sessionId,from:'王明',to:'王明'}).ok,true);t.mock.timers.tick(1);await waitFor(()=>store.getDetail(sessionId).voiceRegistrations?.[0]?.status==='remembered');
+  assert.deepEqual(store.getDetail(sessionId).voiceRegistrations,[{name:'王明',status:'remembered'}]);
+});
+
 test('C1: undoing a second pending rename preserves the restored name for future sessions after expiry and reopening', async t => {
   const context = registrationFixture(t);
   const { store, sessionId, names } = context;
@@ -225,4 +244,80 @@ test('C1 control: a single pending rename remains selectable and recognizable af
   assert.equal(first.ok, true);
   assert.deepEqual(await observeCrossSessionReuse(t, context), reusableWang);
   assert.equal(names.undo(first.undoId).ok, false, 'an expired undo token stays invalid');
+});
+
+async function waitFor(check) {
+  for(let attempt=0;attempt<10000;attempt++){
+    if(check())return;
+    await settleAsyncWork();
+  }
+  assert.fail('asynchronous registration did not reach its expected state');
+}
+
+test('closing a running registration blocks its late write and reopening learns exactly once',async t=>{
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:1000});
+  const root=mkdtempSync(join(tmpdir(),'earshot-running-recovery-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const store=createSessionStore(root),sessionId=completedSession(store);let release;
+  const names=createSpeakerNames({store,enroll:input=>enrollSpeaker({...input,embed:()=>new Promise(resolve=>{release=resolve;})})});
+  t.after(()=>names.close());names.rename({sessionId,from:'小 A',to:'王明'});t.mock.timers.tick(9000);
+  await waitFor(()=>Boolean(release));assert.equal(store.getDetail(sessionId).voiceRegistrations[0].status,'running');
+  names.close();release(new Float32Array([1,0,0]));await settleAsyncWork();
+  assert.deepEqual(readVoiceBook(root),[],'old process ownership cannot write');
+  const reopened=createSpeakerNames({store:createSessionStore(root),enroll:input=>enrollSpeaker({...input,embed:embedSameSpeaker})});t.after(()=>reopened.close());
+  t.mock.timers.tick(1);await waitFor(()=>readVoiceBook(root).length===1);
+  assert.deepEqual(readVoiceBook(root).map(person=>[person.name,person.embeddings.length]),[['王明',2]]);
+});
+
+for(const changed of ['name','artifact']) test(`reopening rejects pending registration when ${changed} changed`,async t=>{
+  const {root,store,sessionId,names}=registrationFixture(t);
+  names.rename({sessionId,from:'小 A',to:'王明'});names.close();
+  if(changed==='name')store.writeNames(sessionId,{'小 A':'李雷'});
+  else store.patchJobs(sessionId,{speakers:{current:'speakers-v2.json'}});
+  let calls=0;const reopened=createSpeakerNames({store:createSessionStore(root),enroll:async()=>{calls++;return 'remembered';}});t.after(()=>reopened.close());
+  t.mock.timers.tick(9000);await settleAsyncWork();assert.equal(calls,0);assert.deepEqual(readVoiceBook(root),[]);
+});
+
+test('three unavailable attempts stop automatic recovery while explicit retry remains available',async t=>{
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:1000});
+  const root=mkdtempSync(join(tmpdir(),'earshot-registration-limit-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const store=createSessionStore(root),sessionId=completedSession(store);let calls=0;
+  const enroll=async()=>{calls++;return 'unavailable';};
+  let names=createSpeakerNames({store,enroll});t.after(()=>names.close());
+  names.rename({sessionId,from:'小 A',to:'王明'});t.mock.timers.tick(9000);await settleAsyncWork();
+  for(let launch=0;launch<3;launch++){
+    names.close();names=createSpeakerNames({store:createSessionStore(root),enroll});t.mock.timers.tick(1);await settleAsyncWork();
+  }
+  assert.equal(calls,3);assert.equal(store.getDetail(sessionId).voiceRegistrations[0].status,'unavailable');
+  assert.equal(names.rename({sessionId,from:'王明',to:'王明'}).ok,true);t.mock.timers.tick(1);await settleAsyncWork();
+  assert.equal(calls,4);
+});
+
+test('automatic identification never enrolls or changes the voice book even after reopening',async t=>{
+  const {existsSync,readFileSync}=await import('node:fs');const {addVoiceprint}=await import('./voiceprint/book.ts');
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:1000});
+  const root=mkdtempSync(join(tmpdir(),'earshot-no-auto-enroll-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const store=createSessionStore(root),sessionId=completedSession(store);
+  addVoiceprint(root,'王明',new Float32Array([1,0,0]));const bookPath=join(root,'people-voice.json'),before=readFileSync(bookPath,'utf8');
+  await identifySession({store,sessionId,embed:embedSameSpeaker});assert.equal(store.readNames(sessionId)['小 A'],'王明');
+  let calls=0;const names=createSpeakerNames({store:createSessionStore(root),enroll:async()=>{calls++;return 'remembered';}});t.after(()=>names.close());
+  t.mock.timers.tick(9000);await settleAsyncWork();
+  assert.equal(calls,0);assert.equal(readFileSync(bookPath,'utf8'),before);
+  assert.equal(existsSync(join(store.sessionDir(sessionId),'voice-registration.json')),false);
+});
+
+test('interruption on the last automatic registration attempt exposes a manual retry',async t=>{
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:1000});
+  const root=mkdtempSync(join(tmpdir(),'earshot-last-running-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const store=createSessionStore(root),sessionId=completedSession(store);let calls=0;
+  const enroll=async()=>{calls++;return calls===3?new Promise(()=>{}):'unavailable';};
+  let names=createSpeakerNames({store,enroll});t.after(()=>names.close());
+  names.rename({sessionId,from:'小 A',to:'王明'});t.mock.timers.tick(9000);await settleAsyncWork();
+  for(let attempt=0;attempt<2;attempt++){
+    names.close();names=createSpeakerNames({store:createSessionStore(root),enroll});t.mock.timers.tick(1);await settleAsyncWork();
+  }
+  assert.equal(calls,3);assert.equal(createSessionStore(root).getDetail(sessionId).voiceRegistrations[0].status,'running');
+  names.close();const reopenedStore=createSessionStore(root);names=createSpeakerNames({store:reopenedStore,enroll});
+  assert.equal(reopenedStore.getDetail(sessionId).voiceRegistrations[0].status,'unavailable');
+  assert.equal(names.rename({sessionId,from:'王明',to:'王明'}).ok,true);t.mock.timers.tick(1);await settleAsyncWork();
+  assert.equal(calls,4);
 });

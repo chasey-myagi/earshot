@@ -37,6 +37,7 @@ function writeToneWav(path, seconds) {
   buf.writeUInt16LE(16, 34);
   buf.write("data", 36);
   buf.writeUInt32LE(samples * 2, 40);
+  for (let i=0;i<samples;i++) buf.writeInt16LE(Math.round(2000*Math.sin(i/20)),44+i*2);
   writeFileSync(path, buf);
 }
 
@@ -175,7 +176,7 @@ test("processSession auto-names a cluster after speakers.current is stored", asy
     transcribe: async ({ filePath, diarize }) => {
       assert.equal(filePath.endsWith("system.wav"), true);
       assert.equal(diarize, true);
-      return [{ tStartMs: 0, text: "你好", speakerId: 0 }];
+      return [{ tStartMs: 0, tEndMs: 8000, text: "你好", speakerId: 0 }];
     },
     embed: async () => vec(1, 0, 0),
   });
@@ -235,7 +236,7 @@ test("processSession keeps jobs done when voiceprint identify throws", async () 
     store,
     sessionId: created.id,
     mode: "all",
-    transcribe: async () => [{ tStartMs: 0, text: "你好", speakerId: 0 }],
+    transcribe: async () => [{ tStartMs: 0, tEndMs: 8000, text: "你好", speakerId: 0 }],
     identify: async () => {
       throw new Error("identify boom");
     },
@@ -413,7 +414,7 @@ test("processSession system-only does not transcribe mic", async () => {
     mode: "all",
     transcribe: async ({ filePath, diarize }) => {
       called.push({ track: filePath.endsWith("mic.wav") ? "mic" : "system", diarize });
-      return [{ tStartMs: 0, text: "你好", speakerId: 0 }];
+      return [{ tStartMs: 0, tEndMs: 8000, text: "你好", speakerId: 0 }];
     },
   });
   assert.deepEqual(called, [{ track: "system", diarize: true }]);
@@ -433,7 +434,7 @@ test("processSession drops stale names after a speakers rerun", async () => {
     store,
     sessionId: created.id,
     mode: "all",
-    transcribe: async () => [{ tStartMs: 0, text: "你好", speakerId: 1 }],
+    transcribe: async () => [{ tStartMs: 0, tEndMs: 8000, text: "你好", speakerId: 1 }],
   });
 
   assert.equal(store.readNames(created.id)["小 A"], undefined);
@@ -456,7 +457,7 @@ test("processSession identify rematches a pruned name via voiceprint", async () 
     store,
     sessionId: created.id,
     mode: "all",
-    transcribe: async () => [{ tStartMs: 0, text: "你好", speakerId: 1 }],
+    transcribe: async () => [{ tStartMs: 0, tEndMs: 8000, text: "你好", speakerId: 1 }],
     embed: async () => vec(1, 0, 0),
   });
 
@@ -478,11 +479,83 @@ test("processSession mode refined still writes speakers when autoDiarize is on",
     mode: "refined",
     transcribe: async ({ filePath, diarize }) => {
       if (filePath.endsWith("system.wav")) assert.equal(diarize, true);
-      return [{ tStartMs: 0, text: "你好", speakerId: 0 }];
+      return [{ tStartMs: 0, tEndMs: 8000, text: "你好", speakerId: 0 }];
     },
   });
   const doc = store.readSession(created.id);
   assert.equal(doc.jobs.refined.status, "done");
   assert.equal(doc.jobs.speakers.status, "done");
   assert.equal(doc.jobs.speakers.current, "speakers-v1.json");
+});
+
+test('one failed track keeps the successful track readable and still attempts system after mic fails', async () => {
+  root=mkdtempSync(join(tmpdir(),'earshot-partial-'));const store=createSessionStore(root);const doc=store.createRecording();store.finalize(doc.id,'complete');
+  tinyWav(join(store.sessionDir(doc.id),'mic.wav'));tinyWav(join(store.sessionDir(doc.id),'system.wav'));
+  await processSession({apiKey:'fixture-only',store,sessionId:doc.id,mode:'all',transcribe:async({filePath})=>{
+    if(filePath.endsWith('mic.wav'))throw Error('network');
+    return [{tStartMs:0,text:'已保存的系统声音',speakerId:0}];
+  }});
+  assert.equal(store.getDetail(doc.id).turns[0]?.text,'已保存的系统声音');
+  assert.equal(store.readSession(doc.id).jobs.refined.status,'failed');
+  assert.equal(store.readSession(doc.id).jobs.speakers.status,'done');
+});
+
+test('a reused cluster label on changed speech cannot inherit the previous human name', async () => {
+  root=mkdtempSync(join(tmpdir(),'earshot-name-version-'));const store=createSessionStore(root);const doc=store.createRecording();store.finalize(doc.id,'complete');
+  tinyWav(join(store.sessionDir(doc.id),'system.wav'));
+  await processSession({apiKey:'fixture-only',store,sessionId:doc.id,mode:'all',transcribe:async()=>[{tStartMs:0,tEndMs:1000,text:'第一位',speakerId:0}]});
+  store.renameSpeaker({sessionId:doc.id,from:'小 A',to:'张三'});
+  await processSession({apiKey:'fixture-only',store,sessionId:doc.id,mode:'speakers',transcribe:async()=>[{tStartMs:2000,tEndMs:3000,text:'另一位',speakerId:0}]});
+  assert.equal(store.getDetail(doc.id).turns[0].speaker,'小 A');
+  assert.equal(store.readNames(doc.id)['小 A'],undefined);
+});
+
+test('transcript remains available but missing speaker labels are not reported as successful diarization', async () => {
+  root=mkdtempSync(join(tmpdir(),'earshot-missing-speaker-'));const store=createSessionStore(root);const doc=store.createRecording();store.finalize(doc.id,'complete');
+  tinyWav(join(store.sessionDir(doc.id),'system.wav'));
+  await processSession({apiKey:'fixture-only',store,sessionId:doc.id,mode:'all',transcribe:async()=>[{tStartMs:0,text:'只有文字'}]});
+  assert.equal(store.getDetail(doc.id).turns[0].text,'只有文字');
+  assert.equal(store.readSession(doc.id).jobs.refined.status,'done');
+  assert.equal(store.readSession(doc.id).jobs.speakers.status,'failed');
+});
+
+test('shared microphone preferences are captured per recording and distinguish its speakers', async () => {
+  root=mkdtempSync(join(tmpdir(),'earshot-shared-mic-'));const store=createSessionStore(root);
+  store.setSharedMicrophone(true);const doc=store.createRecording();store.finalize(doc.id,'complete');store.setSharedMicrophone(false);
+  writeToneWav(join(store.sessionDir(doc.id),'mic.wav'),16);
+  await processSession({apiKey:'fixture-only',store,sessionId:doc.id,mode:'all',transcribe:async({diarize})=>{
+    assert.equal(diarize,true);return [{tStartMs:0,tEndMs:8000,text:'第一位',speakerId:0},{tStartMs:8000,tEndMs:16000,text:'第二位',speakerId:1}];
+  }});
+  const detail=store.getDetail(doc.id);
+  assert.deepEqual(detail.turns.map(row=>row.speaker),['现场 A','现场 B']);
+  const speakers=JSON.parse(readFileSync(join(store.sessionDir(doc.id),store.readSession(doc.id).jobs.speakers.current),'utf8'));
+  assert.ok(speakers.clusters.every(cluster=>cluster.track==='you'));
+});
+
+test('identical words and labels on changed audio do not preserve a previous identity', async () => {
+  root=mkdtempSync(join(tmpdir(),'earshot-audio-identity-'));const store=createSessionStore(root),doc=store.createRecording();store.finalize(doc.id,'complete');
+  const path=join(store.sessionDir(doc.id),'system.wav');tinyWav(path);
+  const transcribe=async()=>[{tStartMs:0,tEndMs:1000,text:'同一句话',speakerId:0}];
+  await processSession({apiKey:'fixture-only',store,sessionId:doc.id,mode:'all',transcribe});store.writeNames(doc.id,{'小 A':'张三'});
+  writeFileSync(path,Buffer.alloc(64,1));
+  await processSession({apiKey:'fixture-only',store,sessionId:doc.id,mode:'all',transcribe});
+  assert.equal(store.getDetail(doc.id).turns[0].speaker,'小 A');
+});
+
+for (const failedTrack of ['mic', 'system']) test(`speaker retry preserves the newly successful track when ${failedTrack} fails`, async () => {
+  root=mkdtempSync(join(tmpdir(),'earshot-speaker-partial-'));
+  const store=createSessionStore(root); store.setSharedMicrophone(true);
+  const doc=store.createRecording(); store.finalize(doc.id,'complete');
+  writeToneWav(join(store.sessionDir(doc.id),'mic.wav'),8);
+  writeToneWav(join(store.sessionDir(doc.id),'system.wav'),8);
+  const transcribe=async({filePath})=>{
+    const track=filePath.endsWith('mic.wav')?'mic':'system';
+    if(track===failedTrack)throw Error('network');
+    return [{tStartMs:0,tEndMs:8000,text:`new ${track}`,speakerId:0}];
+  };
+  await processSession({apiKey:'fixture-only',store,sessionId:doc.id,mode:'speakers',transcribe});
+  const succeeded=failedTrack==='mic'?'system':'mic';
+  assert.deepEqual(store.getDetail(doc.id).turns.map(row=>row.text),[`new ${succeeded}`]);
+  assert.equal(store.readSession(doc.id).jobs.speakers.status,'failed');
+  assert.equal(store.readSession(doc.id).jobs.refined.status,'failed');
 });

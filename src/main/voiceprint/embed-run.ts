@@ -14,26 +14,34 @@ type UtilityChild = {
   on: (event: "message" | "spawn" | "exit", listener: (...args: never[]) => void) => void;
 };
 
-export type EmbedFn = (pcm: Float32Array) => Promise<Float32Array | null>;
+export type EmbedFn = (pcm: Float32Array, signal?: AbortSignal) => Promise<Float32Array | null>;
+let embeddingQueue: Promise<unknown> = Promise.resolve();
 
-export async function defaultEmbed(samples: Float32Array): Promise<Float32Array | null> {
+export async function defaultEmbed(samples: Float32Array, signal?: AbortSignal): Promise<Float32Array | null> {
   const modelPath = findVoiceprintModel();
   if (!modelPath) return null;
   try {
-    return await embedViaChild(samples, modelPath);
+    const work = embeddingQueue.then(() => embedViaChild(samples, modelPath, { signal }));
+    embeddingQueue = work.catch(() => undefined);
+    return await work;
   } catch (err) {
     console.error("[earshot] voiceprint embed failed", err);
     return null;
   }
 }
 
-export async function embedViaChild(samples: Float32Array, modelPath: string): Promise<Float32Array> {
-  const workerPath = voiceprintWorkerPath();
-  const fork = await loadUtilityFork();
-  if (!fork || !existsSync(workerPath)) {
+export async function embedViaChild(samples: Float32Array, modelPath: string, opts: {
+  signal?: AbortSignal; fork?: UtilityProcessMod["fork"]; workerPath?: string;
+} = {}): Promise<Float32Array> {
+  opts.signal?.throwIfAborted();
+  const workerPath = opts.workerPath ?? voiceprintWorkerPath();
+  const fork = opts.fork ?? await loadUtilityFork();
+  opts.signal?.throwIfAborted();
+  if (!fork) {
     const { extractEmbedding } = await import("./embed.ts");
     return extractEmbedding({ samples, sampleRate: 16000, modelPath });
   }
+  if (!existsSync(workerPath)) throw new Error("voiceprint worker missing");
   return new Promise((resolve, reject) => {
     const child = fork(workerPath);
     let settled = false;
@@ -42,6 +50,7 @@ export async function embedViaChild(samples: Float32Array, modelPath: string): P
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", aborted);
       try {
         child.kill();
       } catch {
@@ -50,6 +59,9 @@ export async function embedViaChild(samples: Float32Array, modelPath: string): P
       if (err) reject(err);
       else resolve(embedding ?? new Float32Array());
     };
+    const aborted = () => finish(new Error("voiceprint canceled"));
+    opts.signal?.addEventListener("abort", aborted, { once: true });
+    child.on("exit", (() => finish(new Error("voiceprint worker exited"))) as (...args: never[]) => void);
     child.on("message", ((msg: { ok?: boolean; embedding?: number[]; error?: string }) => {
       if (!msg?.ok || !Array.isArray(msg.embedding)) {
         finish(new Error(msg?.error || "voiceprint worker failed"));
@@ -57,12 +69,13 @@ export async function embedViaChild(samples: Float32Array, modelPath: string): P
       }
       finish(null, Float32Array.from(msg.embedding));
     }) as (...args: never[]) => void);
-    const send = () =>
-      child.postMessage({
+    const send = () => {
+      try { child.postMessage({
         samples: Array.from(samples),
         sampleRate: 16000,
         modelPath,
-      });
+      }); } catch { finish(new Error("voiceprint worker send failed")); }
+    };
     if (typeof child.pid === "number") send();
     else child.on("spawn", send as (...args: never[]) => void);
   });

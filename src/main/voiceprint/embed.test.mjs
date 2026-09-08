@@ -52,3 +52,19 @@ async function ensureSrWav(name) {
   await pipeline(Readable.fromWeb(res.body), createWriteStream(dest));
   return dest;
 }
+
+test('embedding extraction requests a copied buffer compatible with Electron utility processes',async()=>{
+  const {sourceLoader}=await import('../../../scripts/test-source-loader.mjs');
+  const entry=fileURLToPath(new URL('./embed.ts',import.meta.url));let computed=0;
+  const sherpa={SpeakerEmbeddingExtractor:class {
+    dim=192;
+    createStream(){return {acceptWaveform(){}};}
+    compute(_stream,external=true){
+      if(external)throw Error('External buffers are not allowed');
+      computed++;return new Float32Array(192).fill(0.5);
+    }
+  }};
+  const load=sourceLoader(entry,{'node:module':{createRequire:()=>()=>sherpa}});
+  const result=load('./embed.ts').extractEmbedding({samples:new Float32Array(16000),modelPath:entry});
+  assert.equal(result.length,192);assert.equal(result[0],0.5);assert.equal(computed,1);
+});

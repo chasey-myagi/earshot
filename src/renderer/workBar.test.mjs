@@ -17,3 +17,7 @@ test("workBarMessage falls back to 正在处理 when nothing is running", () => 
   assert.equal(workBarMessage({ live: "failed", refined: "failed", speakers: "failed" }), "正在处理");
   assert.equal(workBarMessage({ live: "done", refined: "failed", speakers: "idle" }).includes("正在转写录音"), false);
 });
+
+test('a queued recording reports waiting instead of claiming cloud work is underway',()=>{
+  assert.equal(workBarMessage({live:'done',refined:'running',speakers:'running',waiting:true}),'等待前面的录音处理完成');
+});

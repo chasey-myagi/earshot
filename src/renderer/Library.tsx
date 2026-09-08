@@ -18,12 +18,19 @@ import { anchorPopover } from "./popover";
 import { sessionSideHint } from "./sessionSide";
 import { TranscriptView, type ReadingPositions } from "./TranscriptView";
 import { RecordingClock, RealtimeNotice, StopRecording } from "./RecordingControls";
+import { NameEditor } from "./NameEditor";
 import { SessionTitle } from "./SessionTitle";
 import { ExportMenu } from "./ExportMenu";
 import { PlaybackBar } from "./PlaybackBar";
 import { DictationPermission, DictationSettings } from "./Dictation";
 import { SessionRow, DeletionNotices } from "./SessionRow";
 import { workBarMessage, workFeedback } from "./workBar";
+import { voiceRegistrationMessage } from "./voice-status";
+import { SearchPanel } from "./SearchPanel";
+import { TranscriptEditor } from "./TranscriptEditor";
+import { HotwordSettings } from "./HotwordSettings";
+import { UsageSettings } from "./UsageSettings";
+import type { TranscriptSearchHit } from "../shared/transcript-tools";
 
 type ExportNotice = { text: string; saved?: { id: string; path: string } };
 type NameUndo = { id: string; expiresAt: number; to: string; count: number; sessionId: string; anchor: HTMLElement | null };
@@ -37,7 +44,7 @@ function hasUsableKey(snap: AppSnapshot, draft: string): boolean {
 
 function canStart(snap: AppSnapshot, draft: string): boolean {
   return (
-    !snap.recording &&
+    !snap.recording && !snap.audioImport &&
     !["preparing", "listening", "transcribing"].includes(snap.dictation?.phase ?? "idle") &&
     (!snap.capturePhase || snap.capturePhase === "idle") &&
     snap.permissions.microphone === "granted" &&
@@ -47,6 +54,7 @@ function canStart(snap: AppSnapshot, draft: string): boolean {
 }
 
 function startWhy(snap: AppSnapshot, draft: string): string | null {
+  if (snap.audioImport) return "请先完成或取消录音导入";
   if (["preparing", "listening", "transcribing"].includes(snap.dictation?.phase ?? "idle")) return "请先结束语音输入";
   if (snap.permissions.microphone !== "granted") return "请先允许麦克风访问";
   if (snap.permissions.screen !== "granted") return "请先允许屏幕录制，以录下系统声音";
@@ -91,14 +99,53 @@ export function Library({ snap, refresh }: LibraryProps) {
   const renameAttempt = useRef(0);
   const renameSaving = useRef(false);
   const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [nameUndo, setNameUndo] = useState<NameUndo | null>(null);
   const askedSelect = useRef<string | null>(null);
   const hadSessions = useRef(!first);
   const readingPositions = useRef<ReadingPositions>(new Map());
   const starting = useRef(false);
   const [startBusy, setStartBusy] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const importing = useRef(false);
+  const navigationRequest = useRef(0);
+  const [pendingSearch, setPendingSearch] = useState<{ hit: TranscriptSearchHit; request: number } | null>(null);
+  const [focusTurn, setFocusTurn] = useState<{ sessionId: string; turnId: string; request: number } | null>(null);
+  const searchRefreshKey = JSON.stringify([snap.sessions, snap.selected?.turns.map(turn => [turn.id, turn.correction?.revision]), snap.selected?.transcriptToolsError]);
+  function openPane(next: RightPane) { navigationRequest.current += 1; setPendingSearch(null); setFocusTurn(null); setPane(next); }
+  function openSession(id: string) { openPane("session"); void window.earshot.selectSession(id); }
+  async function searchSelect(hit: TranscriptSearchHit) {
+    const request = ++navigationRequest.current;
+    setPane("session"); setFocusTurn(null); setPendingSearch({ hit, request }); setActionError(null);
+    try { await window.earshot.selectSession(hit.sessionId); await refresh(); }
+    catch { if (request === navigationRequest.current) { setPendingSearch(null); setActionError("无法打开搜索结果，请重试"); } }
+  }
+  useEffect(() => {
+    if (!pendingSearch || pendingSearch.request !== navigationRequest.current || snap.selected?.id !== pendingSearch.hit.sessionId || pane !== "session") return;
+    const { hit, request } = pendingSearch;
+    setPendingSearch(null);
+    if (hit.turnId === null) return;
+    const turn = snap.selected.turns.find(turn => turn.id === hit.turnId);
+    if (!turn || (hit.revision && turn.correction?.revision !== hit.revision)) { setActionError("这条搜索结果的转写已更新，请重新搜索"); return; }
+    setFocusTurn({ sessionId: hit.sessionId, turnId: turn.id, request });
+    if (snap.selected.kind === "dictation" || snap.recording || snap.audioImport || (snap.capturePhase && snap.capturePhase !== "idle")) return;
+    void window.earshot.seekPlayback({ sessionId: hit.sessionId, positionSec: turn.tStartMs / 1000, resume: true }).then(result => {
+      if (!result.ok && navigationRequest.current === request) setActionError(result.error);
+    }).catch(() => { if (navigationRequest.current === request) setActionError("已找到文字，回听暂时不可用"); });
+  }, [pendingSearch, snap.selected, snap.recording, snap.audioImport, snap.capturePhase, pane]);
+  async function importAudio() {
+    if (importing.current) return;
+    importing.current = true; setImportBusy(true); setActionError(null);
+    try {
+      const result = await window.earshot.importAudio();
+      if (!result.ok) setActionError(result.error);
+      else if (!result.canceled && result.sessionId) { openSession(result.sessionId); await refresh(); }
+    } catch { setActionError("录音导入未完成，请重试"); }
+    finally { importing.current = false; setImportBusy(false); }
+  }
 
-  useEffect(() => { if (snap.libraryRequest) setPane("session"); }, [snap.libraryRequest]);
+  useEffect(() => { if (snap.libraryRequest) openPane("session"); }, [snap.libraryRequest]);
+  useEffect(() => { if (snap.settingsRequest) openPane("settings"); }, [snap.settingsRequest]);
 
   useEffect(() => {
     if (!hadSessions.current && !first) setPane("session");
@@ -117,7 +164,7 @@ export function Library({ snap, refresh }: LibraryProps) {
   useEffect(() => {
     renameAttempt.current += 1;
     renameSaving.current = false;
-    setRenameBusy(false);
+    setRenameBusy(false); setRenameError(null);
     setRenameFrom(null);
     setRenameAnchor(null);
     setActionError(null);
@@ -231,7 +278,7 @@ export function Library({ snap, refresh }: LibraryProps) {
   const handleRenameOpen = useCallback((speaker: string, anchor: HTMLElement) => {
     renameAttempt.current += 1;
     renameSaving.current = false;
-    setRenameBusy(false);
+    setRenameBusy(false); setRenameError(null);
     setActionError(null);
     renameAnchorEl.current = anchor;
     setRenameFrom(speaker);
@@ -254,10 +301,12 @@ export function Library({ snap, refresh }: LibraryProps) {
       <header className="titlebar">
         <span className="tb-title">Earshot</span>
         <div className="grow" />
+        <button type="button" className="btn ghost import-audio-button" disabled={importBusy || Boolean(snap.audioImport) || Boolean(snap.recording) || Boolean(snap.capturePhase && snap.capturePhase !== "idle") || ["preparing", "listening", "transcribing"].includes(snap.dictation?.phase ?? "idle")}
+          onClick={() => void importAudio()}>{importBusy ? "导入中…" : "导入录音"}</button>
         {snap.recording ? <>
           <RecordingClock recording={snap.recording} />
           {(settingsOpen || selected?.id !== snap.recording.sessionId) ? <button type="button" className="btn text"
-            onClick={() => { setPane("session"); void window.earshot.selectSession(snap.recording!.sessionId); }}>
+            onClick={() => openSession(snap.recording!.sessionId)}>
             返回当前录制
           </button> : null}
           <button type="button" className="btn ghost" onClick={() => void window.earshot.showGlance()}>浮窗</button>
@@ -267,7 +316,7 @@ export function Library({ snap, refresh }: LibraryProps) {
             type="button"
             className={`btn ghost${settingsOpen ? " on" : ""}`}
             aria-pressed={settingsOpen}
-            onClick={() => setPane(settingsOpen ? "session" : "settings")}
+            onClick={() => openPane(settingsOpen ? "session" : "settings")}
           >
             设置
           </button>
@@ -281,7 +330,7 @@ export function Library({ snap, refresh }: LibraryProps) {
                   {listBlockWhy}
                 </span>
                 {listBlockSettings ? (
-                  <button type="button" className="btn text" onClick={() => setPane("settings")}>
+                  <button type="button" className="btn text" onClick={() => openPane("settings")}>
                     设置
                   </button>
                 ) : null}
@@ -293,6 +342,10 @@ export function Library({ snap, refresh }: LibraryProps) {
           </>
         )}
       </header>
+      {snap.audioImport ? <div className="audio-import-progress" role="status"><span>{snap.audioImport.message}</span>
+        {snap.audioImport.percent !== undefined && <progress aria-label="录音导入进度" max={100} value={snap.audioImport.percent} />}
+        <button type="button" className="btn text" onClick={() => void window.earshot.cancelAudioImport().catch(() => setActionError("取消导入未完成，请重试"))}>取消导入</button>
+      </div> : null}
       {snap.recording ? <RealtimeNotice recording={snap.recording} /> : null}
       <div className={`body${first ? " solo" : ""}`}>
         {first ? null : (
@@ -300,11 +353,10 @@ export function Library({ snap, refresh }: LibraryProps) {
             sessions={snap.sessions}
             selectedId={pane === "session" ? snap.selectedId ?? selected?.id ?? null : null}
             settingsOn={settingsOpen}
-            onSelect={(id) => {
-              setPane("session");
-              void window.earshot.selectSession(id);
-            }}
-            onSettings={() => setPane("settings")}
+            onSelect={openSession}
+            onSearchSelect={hit => void searchSelect(hit)}
+            searchRefreshKey={searchRefreshKey}
+            onSettings={() => openPane("settings")}
           />
         )}
         {settingsOpen ? (
@@ -335,12 +387,15 @@ export function Library({ snap, refresh }: LibraryProps) {
             onAsk={ask}
             onStart={() => void begin()}
           />
-        ) : selected?.kind === "dictation" ? <DictationDetail key={selected.id} detail={selected} /> : (
+        ) : selected?.kind === "dictation" ? <DictationDetail key={selected.id} detail={selected} editingBlocked={Boolean(snap.audioImport)} actionError={actionError} /> : (
           <SessionPane
             summary={selectedSummary}
             detail={selected}
             playback={snap.playback ?? null}
-            playbackBlocked={Boolean(snap.recording) || (snap.capturePhase !== undefined && snap.capturePhase !== "idle")}
+            editingBlocked={Boolean(snap.audioImport)}
+            bookmarkPositionMs={selected?.id === snap.recording?.sessionId ? Math.round((snap.recording?.elapsedSec ?? 0) * 1000) : snap.playback?.sessionId === selected?.id ? Math.round(snap.playback!.positionSec * 1000) : undefined}
+            focusTurn={focusTurn && focusTurn.sessionId === selected?.id ? focusTurn : undefined}
+            playbackBlocked={Boolean(snap.audioImport) || Boolean(snap.recording) || (snap.capturePhase !== undefined && snap.capturePhase !== "idle")}
             readingPositions={readingPositions.current}
             connection={selected?.id === snap.recording?.sessionId ? snap.recording?.connection : undefined}
             capturePhase={selected?.id === snap.recording?.sessionId ? snap.recording?.phase : undefined}
@@ -348,6 +403,7 @@ export function Library({ snap, refresh }: LibraryProps) {
             renameTo={renameTo}
             renameAnchor={renameAnchor}
             renameBusy={renameBusy}
+            renameError={renameError}
             actionError={actionError}
             jobPending={selected ? jobPending[selected.id] : undefined}
             exporting={exporting}
@@ -381,7 +437,7 @@ export function Library({ snap, refresh }: LibraryProps) {
               } catch { setActionError("无法回听，请重试"); }
             }}
             onRenameOpen={handleRenameOpen}
-            onRenameTo={setRenameTo}
+            onRenameTo={value => { setRenameTo(value); setRenameError(null); }}
             onRenameClose={handleRenameClose}
             onRenameSave={async () => {
               if (!selected || !renameFrom || renameSaving.current) return;
@@ -392,7 +448,7 @@ export function Library({ snap, refresh }: LibraryProps) {
               const anchor = renameAnchorEl.current;
               renameSaving.current = true;
               setRenameBusy(true);
-              setActionError(null);
+              setRenameError(null);
               try {
                 const result = await window.earshot.renameSpeaker({
                   sessionId,
@@ -401,7 +457,7 @@ export function Library({ snap, refresh }: LibraryProps) {
                 });
                 if (renameAttempt.current !== attempt || selectedForExport.current !== sessionId) return;
                 if (!result.ok) {
-                  setActionError(result.error);
+                  setRenameError(result.error);
                   return;
                 }
                 setRenameFrom(null);
@@ -412,7 +468,7 @@ export function Library({ snap, refresh }: LibraryProps) {
                 await refresh();
                 if (selectedForExport.current === sessionId) requestAnimationFrame(() => anchor?.isConnected && anchor.focus());
               } catch {
-                if (renameAttempt.current === attempt) setActionError("名字没能保存，请重试");
+                if (renameAttempt.current === attempt) setRenameError("名字没能保存，请重试");
               } finally {
                 if (renameAttempt.current === attempt) { renameSaving.current = false; setRenameBusy(false); }
               }
@@ -426,8 +482,8 @@ export function Library({ snap, refresh }: LibraryProps) {
       {nameUndo ? <NameUndoNotice key={nameUndo.id} value={nameUndo} onDismiss={() => setNameUndo(value => value?.id === nameUndo.id ? null : value)}
         onUndone={async () => { await refresh(); if (selectedForExport.current === nameUndo.sessionId) requestAnimationFrame(() => nameUndo.anchor?.isConnected && nameUndo.anchor.focus()); }} /> : null}
       {snap.playback ? <PlaybackBar playback={snap.playback}
-        blocked={Boolean(snap.recording) || Boolean(snap.capturePhase && snap.capturePhase !== "idle")}
-        onOpen={id => { setPane("session"); void window.earshot.selectSession(id); }} /> : null}
+        blocked={Boolean(snap.audioImport) || Boolean(snap.recording) || Boolean(snap.capturePhase && snap.capturePhase !== "idle")}
+        onOpen={openSession} /> : null}
     </div>
   );
 }
@@ -438,12 +494,16 @@ function SessionList({
   settingsOn,
   onSelect,
   onSettings,
+  onSearchSelect,
+  searchRefreshKey,
 }: {
   sessions: SessionSummary[];
   selectedId: string | null;
   settingsOn: boolean;
   onSelect: (id: string) => void;
   onSettings: () => void;
+  onSearchSelect: (hit: TranscriptSearchHit) => void;
+  searchRefreshKey: string;
 }) {
   const [filter, setFilter] = useState("all");
   const visible = sessions.filter(row => filter === "all" || (row.kind ?? "recording") === filter);
@@ -453,6 +513,7 @@ function SessionList({
 
   return (
     <aside className="slist">
+      <SearchPanel search={window.earshot.searchTranscripts} onSelect={hit => { setFilter("all"); onSearchSelect(hit); }} refreshKey={searchRefreshKey} />
       <div className="session-filter" role="group" aria-label="筛选会话">{[['all', '全部'], ['recording', '录制'], ['dictation', '输入']].map(([value, label]) =>
         <button key={value} type="button" aria-pressed={filter === value} onClick={() => { setFilter(value); const next = sessions.filter(row => value === 'all' || (row.kind ?? 'recording') === value); if (!next.some(row => row.id === selectedId) && next[0]) onSelect(next[0].id); }}>{label}</button>)}</div>
       <div className="sl-main" tabIndex={0} aria-label="会话列表">
@@ -695,11 +756,17 @@ function SettingsPane({
       <h2>设置</h2>
       <div className="set-stack">
         <DictationSettings status={snap.shortcuts} />
+        <HotwordSettings subscribe={window.earshot.onChange} load={window.earshot.hotwordStatus} save={window.earshot.saveHotwords} sync={window.earshot.syncHotwords} />
         <section className="settings-section" aria-labelledby="recording-heading"><h3 id="recording-heading">录制</h3>
           <div className="set-card"><div className="set-row">
             <div>自动区分说话人<p className="why">停止录制后区分不同声音，从下一次录制生效。</p></div>
             <button type="button" className={`knob${snap.autoDiarize ? " on" : ""}`} role="switch" aria-checked={snap.autoDiarize}
               aria-label="自动区分说话人" onClick={() => void window.earshot.setAutoDiarize(!snap.autoDiarize)} />
+          </div></div>
+          <div className="set-card"><div className="set-row">
+            <div>共用麦克风<p className="why">会议室多人使用同一支麦克风时开启。从下一次录制生效；自动区分开启时，也会区分现场声音。</p></div>
+            <button type="button" className={`knob${snap.sharedMicrophone ? " on" : ""}`} role="switch" aria-checked={Boolean(snap.sharedMicrophone)}
+              aria-label="共用麦克风" onClick={() => void window.earshot.setSharedMicrophone(!snap.sharedMicrophone)} />
           </div></div>
         </section>
         <section className="settings-section" aria-labelledby="cloud-heading"><h3 id="cloud-heading">云端服务</h3>
@@ -716,6 +783,7 @@ function SettingsPane({
         </div>
         <p className="settings-caption">密钥仅保存在这台 Mac。转写直接连接百炼，使用你自己的账户额度。</p>
         </section>
+        <UsageSettings load={window.earshot.usageSummary} openBilling={() => void window.earshot.openBilling()} />
         <section className="settings-section" aria-labelledby="permission-heading"><h3 id="permission-heading">系统权限</h3>
         <div className="set-card">
           <div className="set-row">
@@ -750,6 +818,9 @@ function SessionPane({
   detail,
   playback,
   playbackBlocked,
+  editingBlocked,
+  bookmarkPositionMs,
+  focusTurn,
   readingPositions,
   connection,
   capturePhase,
@@ -757,6 +828,7 @@ function SessionPane({
   renameTo,
   renameAnchor,
   renameBusy,
+  renameError,
   actionError,
   jobPending,
   exporting,
@@ -776,6 +848,9 @@ function SessionPane({
   detail: SessionDetail | null;
   playback: PlaybackState | null;
   playbackBlocked: boolean;
+  editingBlocked: boolean;
+  bookmarkPositionMs?: number;
+  focusTurn?: { turnId: string; request: number };
   readingPositions: ReadingPositions;
   connection?: RealtimeStatus;
   capturePhase?: CapturePhase;
@@ -783,6 +858,7 @@ function SessionPane({
   renameTo: string;
   renameAnchor: DOMRect | null;
   renameBusy: boolean;
+  renameError: string | null;
   actionError: string | null;
   jobPending?: string;
   exporting: ExportFormat | null;
@@ -862,17 +938,22 @@ function SessionPane({
       ) : null}
       {detail ? <TranscriptView key={detail.id} detail={detail} positions={readingPositions}
         connection={connection} capturePhase={capturePhase}
+        editable={!editingBlocked && !captureOwned && summary.status !== "recording"}
+        bookmarkPositionMs={bookmarkPositionMs} focusTurn={focusTurn}
         onSeek={!playbackBlocked && summary.status !== "recording" ? onSeek : undefined}
         playbackPositionMs={currentPlayback ? currentPlayback.positionSec * 1000 : undefined}
-        onRename={captureOwned || summary.status === "recording" ? undefined : onRenameOpen} /> : <div className="scroll" />}
+        onRename={editingBlocked || captureOwned || summary.status === "recording" ? undefined : onRenameOpen} /> : <div className="scroll" />}
       {renameFrom && renameAnchor ? (
         <RenamePop
           from={renameFrom}
           anchor={renameAnchor}
           value={renameTo}
           busy={renameBusy}
-          count={detail?.turns.filter(turn => turn.track === "other" && turn.speaker === renameFrom).length ?? 0}
+          error={renameError}
+          count={detail?.turns.filter(turn => !turn.correction?.speakerOverridden && turn.speaker !== "你" && turn.speaker === renameFrom).length ?? 0}
           people={people.filter((name) => name !== renameFrom)}
+          voiceMessage={voiceRegistrationMessage(detail?.voiceRegistrations, renameFrom)}
+          retryVoice={detail?.voiceRegistrations?.some(row => row.name === renameFrom && row.status === "unavailable") ?? false}
           onChange={onRenameTo}
           onClose={onRenameClose}
           onSave={onRenameSave}
@@ -889,6 +970,9 @@ function RenamePop({
   busy,
   count,
   people,
+  voiceMessage,
+  retryVoice,
+  error,
   onChange,
   onClose,
   onSave,
@@ -899,20 +983,15 @@ function RenamePop({
   busy: boolean;
   count: number;
   people: string[];
+  voiceMessage?: string;
+  retryVoice: boolean;
+  error?: string | null;
   onChange: (value: string) => void;
   onClose: () => void;
   onSave: () => void;
 }) {
-  const inputRef = useRef<HTMLInputElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const [point, setPoint] = useState<{ left: number; top: number } | null>(null);
-
-  useEffect(() => {
-    const input = inputRef.current;
-    if (!input) return;
-    input.focus();
-    if (input.value) input.select();
-  }, [from]);
 
   useLayoutEffect(() => {
     const box = boxRef.current;
@@ -925,11 +1004,11 @@ function RenamePop({
         { width: window.innerWidth, height: window.innerHeight },
       ),
     );
-  }, [anchor, from, people.length, value]);
+  }, [anchor, from, people.length, value, voiceMessage, error, busy]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") { event.preventDefault(); onClose(); }
+      if (event.key === "Escape" && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); onClose(); }
       if (event.key === "Tab") {
         const controls = Array.from(boxRef.current?.querySelectorAll<HTMLElement>('input:not(:disabled), button:not(:disabled)') ?? []);
         const first = controls[0], last = controls.at(-1);
@@ -961,23 +1040,14 @@ function RenamePop({
       role="dialog"
       aria-modal="true"
       aria-label="给说话人起名"
-      aria-describedby="rename-scope"
       ref={boxRef}
       style={point ? { left: `${point.left}px`, top: `${point.top}px` } : undefined}
     >
-      <label htmlFor="rename-speaker">说话人姓名</label>
-      <p className="hint" id="rename-scope">将修改本场「{from}」的 {count} 段发言</p>
-      <input
-        id="rename-speaker"
-        ref={inputRef}
-        value={value}
-        maxLength={80}
-        readOnly={busy}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.nativeEvent.isComposing) onSave();
-        }}
-      />
+      <NameEditor label="说话人姓名" value={value} original={from} maxLength={80} busy={busy} error={error}
+        hint={`将修改本场「${from}」的 ${count} 段发言`} allowUnchanged={retryVoice}
+        saveLabel={retryVoice && value.trim() === from ? "重试记住声音" : "保存"}
+        onChange={onChange} onSave={onSave} onCancel={onClose}>
+      {voiceMessage ? <p className="hint" role="status">{voiceMessage}</p> : null}
       {people.length > 0 ? (
         <div className="pop-people">
           {people.map((name) => (
@@ -990,10 +1060,9 @@ function RenamePop({
       {value.trim() && people.includes(value.trim()) ? (
         <p className="hint">这 {count} 段发言将归到已有的「{value.trim()}」</p>
       ) : (
-        <p className="hint">保存后，可在其他会话中使用这个名字。</p>
+        <p className="hint">起名后会尝试记住清晰的声音片段，供以后的录音识别。</p>
       )}
-      <div className="pop-actions"><button type="button" className="btn ghost" disabled={busy} onClick={onClose}>取消</button>
-        <button type="button" className="btn primary" disabled={busy || !value.trim()} onClick={onSave}>{busy ? "保存中…" : "保存"}</button></div>
+      </NameEditor>
     </div>
   );
 }
@@ -1021,16 +1090,24 @@ function NameUndoNotice({ value, onDismiss, onUndone }: { value: NameUndo; onDis
     <button type="button" className="btn ghost" disabled={busy} onClick={() => void undo()}>{busy ? "撤销中…" : "撤销"}</button></div>;
 }
 
-function DictationDetail({ detail }: { detail: SessionDetail }) {
+function DictationDetail({ detail, editingBlocked, actionError }: { detail: SessionDetail; editingBlocked: boolean; actionError: string | null }) {
   const [message, setMessage] = useState('');
+  const [editing, setEditing] = useState(false);
+  const turn = detail.turns[0];
   const text = detail.dictation?.text ?? '';
   return <div className="col"><div className="sess-head"><div className="grow">
     <SessionTitle sessionId={detail.id} title={detail.title} />
     <p className="sess-meta">语音输入 · {formatListWhen(detail.startedAt)} {formatStartTime(detail.startedAt)} · {formatDurationShort(detail.durationSec)}</p>
-  </div></div><div className="dictation-document"><p className="dictation-copy">{text}</p>
+  </div></div><div className="dictation-document">
+    {actionError && <p className="tool-error" role="alert">{actionError}</p>}
+    {detail.transcriptToolsError && <p className="tool-error" role="status">{detail.transcriptToolsError}</p>}
+    <p className="dictation-copy">{text}</p>
+    {editing && !editingBlocked && turn?.correction && <TranscriptEditor key={`${detail.id}:${turn.id}`} sessionId={detail.id} turn={turn}
+      onSave={window.earshot.correctTurn} onUndo={window.earshot.undoTurnCorrection} onReset={window.earshot.resetTurnCorrection} onClose={() => setEditing(false)} />}
     <div className="document-tools"><button type="button" className="btn ghost" onClick={async () => { try { await navigator.clipboard.writeText(text); setMessage('已复制'); } catch { setMessage('复制未完成，请选中文字手动复制'); } }}>复制文字</button>
-      <span className="why">{detail.dictation?.polishModel ? '已整理' : '原始转写'}</span></div>
-    {detail.dictation?.polishModel && <details className="raw-text"><summary>查看原始转写</summary><p>{detail.dictation.rawText}</p></details>}
+      {turn?.correction && <button type="button" className="btn ghost" disabled={editingBlocked} aria-expanded={editing} onClick={() => setEditing(value => !value)}>修改文字</button>}
+      <span className="why">{turn?.correction?.edited ? '已手动修改' : detail.dictation?.polishModel ? '已整理' : '原始转写'}</span></div>
+    {detail.dictation && (detail.dictation.polishModel || turn?.correction?.edited) && <details className="raw-text"><summary>查看原始转写</summary><p>{detail.dictation.rawText}</p></details>}
     {detail.dictation?.warning && <p className="why">{detail.dictation.warning}</p>}
     <p className="why" role="status">{message}</p><p className="document-foot">文字保存在本机</p>
   </div></div>;

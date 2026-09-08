@@ -343,3 +343,37 @@ test("sentences without provider ids keep partial-final identity and separate la
   assert.notEqual(rows[1].sentenceId, rows[2].sentenceId);
   session.stop();
 });
+
+// Fixed recovery contract, recorded RED before implementation (2026-09-08).
+test('recovery contract: run-task explicitly keeps continuous silence alive', () => {
+  const sent = []; let open;
+  const session = createRealtimeSession({ apiKey: 'synthetic', onSentence() {}, connect: () => ({
+    send: data => sent.push(data), close() {}, onOpen: fn => open = fn, onMessage() {}, onError() {}, onClose() {},
+  }) });
+  try { open(); assert.equal(JSON.parse(sent[0]).payload.parameters.heartbeat, true); }
+  finally { session.stop(); }
+});
+
+test('provider failures classify actionable causes and never carry raw text into structured diagnostics', () => {
+  const cases=[['InvalidApiKey','auth',false],['InsufficientBalance','quota',false],['InvalidParameter','invalid-request',false],
+    ['RequestTimeout','provider-timeout',true],['Throttling','rate-limit',true],['InternalError','server',true],['ServiceUnavailable','server',true]];
+  for(const [code,category,retryable] of cases){
+    const parsed=parseRealtimeMessage(JSON.stringify({header:{event:'task-failed',error_code:code,error_message:'fixture text sk-secret'}}));
+    assert.deepEqual(parsed.failure,{category,retryable,providerCode:code});
+  }
+  const parsed=parseRealtimeMessage(JSON.stringify({header:{event:'task-failed',error_code:'sk-private-token',error_message:'private transcript'}}));
+  assert.deepEqual(parsed.failure,{category:'provider',retryable:false});
+});
+
+// C1 fixed regression: explicit provider codes outrank ambiguous explanation text.
+test('C1 contract: known throttling codes remain retryable despite quota words, while account failures remain terminal', () => {
+  for (const [code, message, category, retryable] of [
+    ['Throttling.RateQuota', 'Too many requests', 'rate-limit', true],
+    ['Throttling', 'Request rate quota exceeded temporarily', 'rate-limit', true],
+    ['InsufficientBalance', 'Account quota exhausted; rate limit request rejected', 'quota', false],
+    ['InvalidApiKey', 'Rate quota request rejected', 'auth', false],
+  ]) {
+    const parsed = parseRealtimeMessage(JSON.stringify({ header: { event: 'task-failed', error_code: code, error_message: message } }));
+    assert.deepEqual(parsed.failure, { category, retryable, providerCode: code }, code);
+  }
+});

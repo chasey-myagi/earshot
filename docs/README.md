@@ -5,6 +5,9 @@
 | 文档 | 内容 |
 | --- | --- |
 | [README](../README.md) / [中文说明](../README.zh-CN.md) | 安装、使用与限制 |
+| [安装指南](install.md) | 下载、兼容性、权限、更新和卸载 |
+| [发布流程](release.md) | 发布材料、版本与包检查、分发边界 |
+| [首版发布说明](releases/v0.1.0.md) | GitHub 0.1.0 预览版说明 |
 | [PRODUCT](../PRODUCT.md) | 当前产品范围 |
 | [DESIGN](../DESIGN.md) | 当前视觉规范与资源 |
 | [architecture](architecture.md) | 进程、原生依赖和信任边界 |

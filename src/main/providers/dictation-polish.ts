@@ -1,5 +1,9 @@
+import { randomUUID } from 'node:crypto';
+import { parseUsage, recordUsage } from './usage.ts';
 import type { ModelPrefs } from '../../shared/model-settings';
 export async function polishDictation(opts: { apiKey: string; text: string; model: Exclude<ModelPrefs['polish'], 'off'>; signal: AbortSignal }): Promise<string> {
+  const usageId = randomUUID(), at = Date.now();
+  recordUsage({ id: usageId, at, model: opts.model, kind: 'polish', measurement: 'local', outcome: 'uncertain' });
   const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
     method: 'POST', headers: { Authorization: `Bearer ${opts.apiKey}`, 'Content-Type': 'application/json' },
     signal: AbortSignal.any([opts.signal, AbortSignal.timeout(10000)]),
@@ -8,6 +12,8 @@ export async function polishDictation(opts: { apiKey: string; text: string; mode
   });
   if (!response.ok) throw new Error('整理未完成，已保留原始转写');
   const body = await response.json() as { choices?: { message?: { content?: string }; finish_reason?: string }[] };
+  const usage = parseUsage(body);
+  recordUsage({ id: usageId, at, model: opts.model, kind: 'polish', ...usage, measurement: 'provider', outcome: 'succeeded' });
   const text = body.choices?.[0]?.message?.content?.trim();
   if (!text || body.choices?.[0]?.finish_reason === 'length') throw new Error('整理未完成，已保留原始转写');
   return text;

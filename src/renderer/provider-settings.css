@@ -1,0 +1,29 @@
+.provider-settings-body { padding: 18px 20px; }
+.provider-settings-body textarea { display: block; width: 100%; margin-top: 12px; resize: vertical; min-height: 100px; max-height: 300px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--canvas); color: var(--text); font: inherit; line-height: 1.6; }
+.provider-settings-actions, .provider-settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.provider-settings-actions { margin-top: 8px; }
+.provider-settings-heading { margin-bottom: 10px; }
+.provider-settings-heading h3 { margin: 0; }
+.provider-settings-heading .provider-settings-actions { margin: 0; }
+.provider-settings-heading select { max-width: 130px; font: inherit; padding: 5px 9px; color: var(--text); background: var(--raise); border: 1px solid var(--line); border-radius: 7px; }
+.hotword-status { display: flex; gap: 10px; align-items: baseline; color: var(--muted); line-height: 1.6; }
+.hotword-status .field-link { flex-shrink: 0; }
+.hotword-models { list-style: none; margin: 12px 0 0; padding: 0; font-size: var(--text-caption); color: var(--muted); }
+.hotword-models li { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; }
+.usage-overview { display: grid; grid-template-columns: 1.25fr 1fr 1fr; margin: 0; padding-bottom: 18px; gap: 18px; }
+.usage-overview dt { color: var(--muted); font-size: var(--text-caption); margin-bottom: 6px; }
+.usage-overview dd { margin: 0; font-size: 21px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.usage-overview small { font-size: var(--text-caption); font-weight: normal; color: var(--muted); }
+.usage-table-wrap { overflow-x: auto; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: var(--text-caption); text-align: left; }
+.usage-table th, .usage-table td { padding: 10px 0; border-top: 1px solid var(--line); font-weight: normal; vertical-align: top; }
+.usage-table thead th { color: var(--muted); }
+.usage-table th:first-child { padding-right: 12px; }
+.usage-table td { font-variant-numeric: tabular-nums; }
+.usage-table td:last-child, .usage-table th:last-child { text-align: right; padding-left: 12px; white-space: nowrap; }
+.usage-table small { display: block; margin-top: 3px; color: var(--muted); }
+.usage-details { font-size: var(--text-caption); color: var(--muted); margin-top: 10px; }
+.usage-details summary { cursor: pointer; }
+.usage-balance { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.usage-balance strong { font-weight: 500; }
+@media (max-width: 720px) { .usage-overview { grid-template-columns: 1fr; gap: 10px; } .usage-overview > div { display: flex; justify-content: space-between; align-items: baseline; } .usage-overview dd { font-size: 18px; } .usage-balance { flex-wrap: wrap; } .hotword-models li { flex-wrap: wrap; gap: 3px; } }

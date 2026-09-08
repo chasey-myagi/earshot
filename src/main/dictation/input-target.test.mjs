@@ -1,43 +1,34 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { protectInputTarget } from './input-target.ts';
+import test from 'node:test';
+import {validSelection} from './input-target.ts';
+import {pasteFixture} from './paste-target-fixture.mjs';
 
-function fixture() {
-  let current = { value: '前🙂中后', range: { location: 3, length: 1 } }, focus = true, releases = 0;
-  const writes = [];
-  const target = protectInputTarget({ read: () => current, focused: () => focus,
-    replace: (before, text) => { writes.push(before.value.slice(0, before.range.location) + text + before.value.slice(before.range.location + before.range.length)); return true; },
-    release: () => releases++,
-  });
-  return { target, writes, edit: value => current = value, blur: () => focus = false, releases: () => releases };
-}
-test('captured selection uses UTF-16 offsets and is inserted at most once', () => {
-  const h = fixture(); assert.equal(h.target.insert('回填😀'), true);
-  assert.deepEqual(h.writes, ['前🙂回填😀后']); assert.equal(h.target.insert('重复'), false);
-  h.target.release(); h.target.release(); assert.equal(h.releases(), 1);
+test('selection bounds use UTF-16 and reject malformed ranges',()=>{
+ assert.equal(validSelection('前🙂后',{location:1,length:2}),true);
+ for(const range of [{location:-1,length:1},{location:1.5,length:0},{location:0,length:9},{location:0,length:-1}])assert.equal(validSelection('abc',range),false);
 });
-test('editing, selection movement, focus changes and released targets refuse late results', () => {
-  for (const change of [
-    h => h.edit({ value: '已改', range: { location: 0, length: 0 } }),
-    h => h.edit({ value: '前🙂中后', range: { location: 0, length: 0 } }),
-    h => h.blur(), h => h.target.release(),
-  ]) { const h = fixture(); change(h); assert.equal(h.target.insert('迟到'), false); assert.deepEqual(h.writes, []); h.target.release(); assert.equal(h.releases(), 1); }
+test('one paste replaces the selected text and preserves both surrounding fragments',async()=>{
+ const h=pasteFixture();h.onPaste(text=>{h.deliver(text);return 'posted';});
+ assert.equal((await h.insert('很长的中文🙂👨‍👩‍👧‍👦，允许换行\n下一行。')).kind,'verified');
+ assert.equal(h.state.editable.value,'前｜很长的中文🙂👨‍👩‍👧‍👦，允许换行\n下一行。｜后');
+ assert.deepEqual(h.events,['claim','paste','finish']);assert.equal(h.counts().attempts,1);h.target.release();
 });
-test('missing or invalid selections release the target and cannot create an insertion handle', () => {
-  for (const value of [null, {value:'abc',range:{location:-1,length:0}}, {value:'abc',range:{location:2,length:2}}, {value:'abc',range:{location:1.5,length:0}}]) {
-    let released=0;
-    assert.equal(protectInputTarget({read:()=>value,focused:()=>true,replace:()=>assert.fail('invalid write'),release:()=>released++}),null);
-    assert.equal(released,1);
-  }
+test('known window, document, selection and secure-input changes prevent even a clipboard claim',async()=>{
+ for(const patch of [{sameContext:false},{secure:true},{editable:{value:'用户改了',range:{location:0,length:0}}},{editable:{value:'前｜选区｜后',range:{location:0,length:0}}}]){
+  const h=pasteFixture();Object.assign(h.state,patch);assert.equal((await h.insert()).kind,'not-posted');assert.equal(h.counts().claims,0);assert.equal(h.counts().attempts,0);h.target.release();
+ }
 });
-
-test('focus moving while the input snapshot is read rejects the late insertion', () => {
-  let focused = true, reads = 0, writes = 0;
-  const target = protectInputTarget({
-    read: () => { if (++reads > 1) focused = false; return {value:'原文',range:{location:2,length:0}}; },
-    focused: () => focused, replace: () => { writes++; return true; }, release() {},
-  });
-  assert.equal(target.insert('迟到的文字'), false);
-  assert.equal(writes, 0);
-  target.release();
+test('physical keys may release within the bounded wait, while a held key never receives synthesized releases',async()=>{
+ const h=pasteFixture({keysReleased:false});h.onPaste(text=>{h.deliver(text);return 'posted';});
+ setTimeout(()=>h.state.keysReleased=true,20);assert.equal((await h.insert()).kind,'verified');h.target.release();
+ const held=pasteFixture({keysReleased:false});assert.equal((await held.insert()).kind,'not-posted');assert.equal(held.counts().attempts,0);held.target.release();
+});
+test('target or clipboard changes during snapshot creation restore the lease and post nothing',async()=>{
+ for(const changed of ['target','clipboard']){
+  const h=pasteFixture();h.onClaim(()=>changed==='target'?h.state.sameContext=false:h.copyChanged());
+  assert.equal((await h.insert()).kind,'not-posted');assert.equal(h.counts().attempts,0);assert.equal(h.counts().finishes,1);h.target.release();
+ }
+});
+test('malformed UTF-16 and NUL are rejected before any clipboard mutation',async()=>{
+ for(const text of ['a\ud800','\u0000','a'.repeat(65537)]){const h=pasteFixture();assert.equal((await h.insert(text)).kind,'not-posted');assert.equal(h.counts().claims,0);h.target.release();}
 });
