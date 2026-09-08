@@ -49,7 +49,7 @@ async function runApp(config){
  app.whenReady().then(async()=>{
   try{
    protect(session.defaultSession);
-   for(let n=0;n<150;n++){window=windows.find(w=>!w.isDestroyed()&&w.webContents.getURL().includes('/out/renderer/index.html'));if(window)break;await new Promise(r=>setTimeout(r,30));}
+   for(let n=0;n<150;n++){window=windows.find(w=>!w.isDestroyed()&&w.webContents.getURL()===pathToFileURL(join(config.workspace,'out/renderer/index.html')).href);if(window)break;await new Promise(r=>setTimeout(r,30));}
    assert.ok(window,'real main created the library');
    const run=async code=>{try{return await window.webContents.executeJavaScript(code,true);}catch(error){throw Error(String(error)+'; app DOM action: '+code.slice(0,220));}};
    const until=async code=>{for(let n=0;n<160;n++){if(await run(code))return;await new Promise(r=>setTimeout(r,35));}throw Error('Actual-app wait expired: '+code);};
