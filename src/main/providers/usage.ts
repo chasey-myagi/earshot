@@ -10,7 +10,7 @@ export const BALANCE_SOURCE = 'https://help.aliyun.com/zh/user-center/bill-view'
 const RETENTION_DAYS = 366, MAX_EVENTS = 10_000;
 const ASR_PRICES: Record<string, number> = { 'fun-asr': 0.00022, 'fun-asr-realtime': 0.00033,
   'qwen-audio-3.0-asr-flash-streaming': 0.00033, 'qwen3-asr-flash-realtime': 0.00033 };
-const MODELS = [...Object.keys(ASR_PRICES), 'qwen3.8-flash', 'qwen3.7-flash', 'qwen3.7-plus'];
+const MODELS = [...Object.keys(ASR_PRICES), 'qwen3.8-flash', 'qwen3.7-flash', 'qwen3.7-plus', 'qwen-flash'];
 const positive = (value: unknown, cap: number) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= cap ? value : undefined;
 
 /** Only documented response fields; never infer token counts from text length. */
@@ -30,6 +30,11 @@ export function estimateCny(event: UsageEvent): number | null {
   if (audioRate !== undefined) return event.audioSeconds === undefined ? null : event.audioSeconds * audioRate;
   if (event.inputTokens === undefined || event.outputTokens === undefined) return null;
   const input = event.inputTokens, output = event.outputTokens;
+  if (event.model === 'qwen-flash') {
+    // Official pricing uses decimal K (128,000 / 256,000 tokens).
+    const rate = input <= 128_000 ? [0.15, 1.5] : input <= 256_000 ? [0.6, 6] : [1.2, 12];
+    return (input * rate[0] + output * rate[1]) / 1_000_000;
+  }
   if (event.model === 'qwen3.8-flash') return (input + output * 3) / 1_000_000;
   if (event.model === 'qwen3.7-flash') {
     const rate = input <= 32768 ? [0.2, 0.8] : input <= 262144 ? [0.6, 2.4] : [1.2, 4.8];
@@ -47,7 +52,7 @@ function validEvent(raw: unknown): raw is UsageEvent {
   if (!raw || typeof raw !== 'object') return false;
   const row = raw as UsageEvent;
   return typeof row.id === 'string' && /^[a-f0-9]{64}$/.test(row.id) && Number.isSafeInteger(row.at) && row.at > 0
-    && MODELS.includes(row.model) && ['file-asr', 'realtime-asr', 'dictation-asr', 'polish'].includes(row.kind)
+    && MODELS.includes(row.model) && ['file-asr', 'realtime-asr', 'dictation-asr', 'polish', 'session-title'].includes(row.kind)
     && ['provider', 'local'].includes(row.measurement) && (!row.outcome || ['succeeded', 'uncertain'].includes(row.outcome))
     && (row.audioSeconds === undefined || positive(row.audioSeconds, 172_800) !== undefined)
     && (row.inputTokens === undefined || (Number.isInteger(row.inputTokens) && positive(row.inputTokens, 10_000_000) !== undefined))
@@ -81,6 +86,7 @@ export function createUsageLedger(path: string, now: () => number = Date.now) {
       // Task duration in result-generated is cumulative, not an amount to add per sentence.
       if (previous.measurement === 'provider' && event.measurement === 'local') {
         event.audioSeconds = previous.audioSeconds; event.measurement = 'provider';
+        event.inputTokens = previous.inputTokens; event.outputTokens = previous.outputTokens;
       } else if (previous.measurement === event.measurement && previous.audioSeconds !== undefined && event.audioSeconds !== undefined) {
         event.audioSeconds = Math.max(previous.audioSeconds, event.audioSeconds);
       }

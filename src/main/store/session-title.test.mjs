@@ -24,6 +24,29 @@ test('new recording titles contain their own local date and start time without r
   assert.equal(store.readSession(first.id).title, '已有自定义名称');
 });
 
+test('automatic titles default off, opt in only new recordings, and preserve explicit metadata on reopening', t => {
+  const { root, store } = fixture(t);
+  assert.equal(store.readPrefs().autoTitle, false);
+  const off = store.createRecording();
+  assert.equal(off.titleSource, 'default'); assert.equal(off.titleRevision, 0); assert.equal(off.autoTitle, undefined);
+  store.setAutoTitle(true);
+  const on = store.createRecording();
+  const reopened = createSessionStore(root);
+  assert.equal(reopened.readSession(off.id).autoTitle, undefined);
+  assert.deepEqual(reopened.readSession(on.id).autoTitle, { state: 'pending' });
+  assert.equal(reopened.readPrefs().autoTitle, true);
+  store.setSharedMicrophone(true); store.setAutoDiarize(false);
+  assert.equal(store.readPrefs().autoTitle, true);
+});
+
+test('manual writes advance title revision even when the visible title returns to the original', t => {
+  const { store } = fixture(t), doc = store.createRecording();
+  store.renameSession({ sessionId: doc.id, title: '手动名称' });
+  store.renameSession({ sessionId: doc.id, title: doc.title });
+  assert.equal(store.readSession(doc.id).titleSource, 'manual');
+  assert.equal(store.readSession(doc.id).titleRevision, 2);
+});
+
 test('rename trims, persists and invalidates list/detail caches; reopening and export use the new title', async t => {
   const {root,store} = fixture(t);
   const doc=store.createRecording();

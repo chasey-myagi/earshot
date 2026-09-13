@@ -43,6 +43,7 @@ export type PostQueue = {
   apiKey: string | null;
   process?: typeof processSession;
   onChange?: () => void;
+  onRefinedReady?: (sessionId: string, signal?: AbortSignal) => void;
 };
 
 export function queuePost(queue: PostQueue, sessionId: string, mode: JobMode, retryUncertainSubmission = false): ActionResult {
@@ -76,6 +77,7 @@ export function queuePost(queue: PostQueue, sessionId: string, mode: JobMode, re
       queue.jobFailReasons.set(sessionId, row);
     },
     onChange: queue.onChange,
+    onRefinedReady: queue.onRefinedReady,
   }), () => {
     queue.store.patchJobs(sessionId, {
       refined: mode !== "speakers" ? { status: "canceled", reason: null } : undefined,

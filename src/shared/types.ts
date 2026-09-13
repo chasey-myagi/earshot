@@ -53,6 +53,8 @@ export type SessionSummary = {
   kind?: "recording" | "dictation";
   id: string;
   title: string;
+  titleSource?: "default" | "manual" | "auto";
+  titleRevision?: number;
   startedAt: string;
   durationSec: number;
   status: SessionStatus;
@@ -97,6 +99,7 @@ export type AppSnapshot = {
   shortcuts?: import('./dictation').ShortcutStatus;
   hasApiKey: boolean;
   autoDiarize: boolean;
+  autoTitle?: boolean;
   sharedMicrophone?: boolean;
   permissions: { microphone: PermissionState; screen: PermissionState };
   recording: RecordingLive | null;
@@ -174,6 +177,7 @@ export type EarshotApi = {
   retryRealtime: () => Promise<ActionResult>;
   selectSession: (id: string) => Promise<void>;
   setAutoDiarize: (on: boolean) => Promise<void>;
+  setAutoTitle: (on: boolean) => Promise<ActionResult>;
   setSharedMicrophone: (on: boolean) => Promise<void>;
   renameSpeaker: (input: RenameSpeakerInput) => Promise<RenameSpeakerResult>;
   undoSpeakerRename: (id: string) => Promise<ActionResult>;

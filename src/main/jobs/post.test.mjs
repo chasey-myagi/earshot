@@ -13,6 +13,22 @@ afterEach(() => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
+test('optional title callback runs only after full refined success and cannot fail ASR', async () => {
+  root = mkdtempSync(join(tmpdir(), 'earshot-post-title-'));
+  const store = createSessionStore(root), calls = [];
+  store.setAutoDiarize(false);
+  for (const failMic of [false, true]) {
+    const doc = store.createRecording(); store.finalize(doc.id, 'complete');
+    tinyWav(join(store.sessionDir(doc.id), 'mic.wav')); tinyWav(join(store.sessionDir(doc.id), 'system.wav'));
+    await processSession({ store, apiKey: 'fixture-only', sessionId: doc.id, mode: 'all',
+      transcribe: async ({ filePath }) => { if (failMic && filePath.endsWith('mic.wav')) throw new Error('fixture failure'); return [{ tStartMs: 0, text: '完整文本' }]; },
+      onRefinedReady: id => { assert.equal(store.readSession(id).jobs.refined.status, 'done'); calls.push(id); throw new Error('optional title failure'); },
+    });
+    assert.equal(store.readSession(doc.id).jobs.refined.status, failMic ? 'failed' : 'done');
+  }
+  assert.equal(calls.length, 1);
+});
+
 function tinyWav(path) {
   writeFileSync(path, Buffer.alloc(64));
 }

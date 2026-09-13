@@ -1,5 +1,5 @@
 export type UsagePeriod = 'today' | 'month' | 'all';
-export type UsageKind = 'file-asr' | 'realtime-asr' | 'dictation-asr' | 'polish';
+export type UsageKind = 'file-asr' | 'realtime-asr' | 'dictation-asr' | 'polish' | 'session-title';
 export type UsageEvent = {
   id: string; at: number; model: string; kind: UsageKind;
   audioSeconds?: number; inputTokens?: number; outputTokens?: number;

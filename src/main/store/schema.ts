@@ -6,6 +6,11 @@ export type SessionDocument = {
   dictation?: import("../../shared/types").DictationDocument;
   id: string;
   title: string;
+  /** Missing on older/imported sessions; never infer ownership from title text. */
+  titleSource?: "default" | "manual" | "auto";
+  titleRevision?: number;
+  /** Only new recordings created with the preference enabled receive pending. */
+  autoTitle?: { state: "pending" | "attempted" | "applied" | "skipped"; requestId?: string };
   startedAt: string;
   endedAt: string | null;
   durationSec: number;
@@ -24,5 +29,6 @@ export type SessionDocument = {
 
 export type Prefs = {
   autoDiarize: boolean;
+  autoTitle?: boolean;
   sharedMicrophone?: boolean;
 };

@@ -331,14 +331,21 @@ input:focus-visible {
   min-height: 0;
 }
 
-.sl-main { flex: 1; min-height: 0; overflow: auto; }
+.sl-main { flex: 1; min-height: 0; overflow: auto; padding: 0 var(--space-1) var(--space-2); }
+.session-group + .session-group { margin-top: var(--space-2); }
+.session-group-rows { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-1); }
+.session-selection-bar { margin: var(--space-2) var(--space-1) 0; padding: var(--space-2); border-top: 1px solid var(--line); font-size: var(--text-caption); }
+.session-selection-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); color: var(--muted); }
+.session-selection-actions button { color: var(--danger); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); }
+.session-selection-actions button:hover { background: var(--raise); }
+.session-selection-bar .field-err { margin: var(--space-2) 0 0; }
 
 .sl-group {
   font-size: var(--text-caption);
   font-weight: 500;
   letter-spacing: 0.06em;
   color: var(--faint);
-  padding: var(--space-3) 10px 5px;
+  padding: var(--space-4) 10px var(--space-2);
 }
 
 .sl-row {
@@ -347,7 +354,7 @@ input:focus-visible {
   align-items: stretch;
   gap: 3px;
   width: 100%;
-  padding: 9px 10px;
+  padding: var(--space-3) 10px;
   border-radius: var(--radius-sm);
   text-align: left;
   transition: background var(--dur-fast) var(--ease-out);
@@ -752,13 +759,13 @@ input:focus-visible {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: var(--space-6);
 }
 
-.dictation-settings { display: grid; gap: 28px; }
+.dictation-settings { display: grid; gap: var(--space-6); }
 .settings-section { min-width: 0; }
 .settings-section h3 { margin: 0 0 10px 2px; color: var(--muted); font-size: 12px; font-weight: 600; line-height: 1.4; }
-.settings-caption { margin: 8px 2px 0; color: var(--faint); font-size: 11px; line-height: 1.6; }
+.settings-caption { margin: var(--space-3) 2px 0; color: var(--faint); font-size: 11px; line-height: 1.6; }
 .settings-note summary { width: fit-content; cursor: pointer; border-radius: 3px; }
 .settings-note p { max-width: 68ch; margin: 7px 0 0; }
 .settings-feedback { margin: 0 2px; font-size: 12px; color: var(--ok); }
@@ -995,6 +1002,20 @@ input:focus-visible {
 
 .session-title { display:flex; align-items:baseline; gap:10px; min-width:0; }
 .session-title h2 { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.animated-session-title { display:block; position:relative; min-width:0; overflow:hidden; white-space:nowrap; }
+.title-current, .title-leaving { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.title-leaving { position:absolute; inset:0; pointer-events:none; }
+.is-renaming .title-current { animation:title-arrive 240ms cubic-bezier(.22, 1, .36, 1) both; }
+.is-renaming .title-leaving { animation:title-depart 180ms ease-out both; }
+@keyframes title-arrive { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:translateY(0); } }
+@keyframes title-depart { from { opacity:1; transform:translateY(0); } to { opacity:0; transform:translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) {
+  .is-renaming .title-current { animation:none; }
+  .title-leaving { display:none; }
+}
+.auto-title-note { max-width:42ch; margin-top:7px; }
+.auto-title-note p { margin-top:8px; line-height:1.6; }
+.auto-title-setting > .knob { align-self:flex-start; margin-top:2px; }
 .session-title .btn { flex:none; }
 .title-edit { width:100%; }
 .title-edit-row { display:flex; align-items:center; gap:8px; }
@@ -1077,7 +1098,7 @@ input:focus-visible {
 .session-filter button{flex:1;border:0;border-radius:5px;padding:5px 2px;font-size:11px;background:transparent;color:var(--muted);cursor:pointer}
 .session-filter button[aria-pressed=true]{background:var(--raise);color:var(--text);box-shadow:0 1px 3px #00000012}
 .session-row>.sl-row{padding-left:34px;padding-right:12px;position:relative}
-.session-type{position:absolute;left:11px;top:14px;color:var(--muted);display:flex}
+.session-type{position:absolute;left:11px;top:16px;color:var(--muted);display:flex}
 .session-type svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
 .session-title-menu{background:transparent;border:0;border-radius:6px;padding:5px;color:var(--muted);cursor:pointer;display:flex;flex:none}
 .session-title-menu:hover{background:var(--layer);color:var(--text)}

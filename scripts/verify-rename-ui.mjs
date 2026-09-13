@@ -12,11 +12,11 @@ const fixture = `
 import React,{useState} from 'react';import {createRoot} from 'react-dom/client';
 import {Library} from ${JSON.stringify(resolve('src/renderer/Library.tsx'))};
 import ${JSON.stringify(resolve('src/renderer/styles.css'))};
-const make=(id,title)=>({id,title,startedAt:'2026-09-08T02:00:00Z',endedAt:'2026-09-08T02:30:00Z',durationSec:1800,status:'complete',jobs:{live:'done',refined:'done',speakers:'done'},people:['李华'],bookmarks:[],turns:[
+const make=(id,title,kind='recording')=>({id,title,kind,startedAt:'2026-09-08T02:00:00Z',endedAt:'2026-09-08T02:30:00Z',durationSec:1800,status:'complete',jobs:{live:'done',refined:'done',speakers:'done'},people:['李华'],bookmarks:[],...(kind==='dictation'?{dictation:{text:'请确认下一次的时间。',rawText:'请确认下一次的时间。',asrModel:'fixture-model'}}:{}),turns:[
 {id:'one',track:'other',speaker:'王明',text:'我们先确认今天的交付范围，再安排下一步。',tStartMs:12000,correction:{revision:'r0',originalText:'我们先确认今天的交付范围，再安排下一步。',originalSpeaker:'王明',edited:false,speakerOverridden:false,canUndo:false}},
 {id:'two',track:'you',speaker:'你',text:'好的，我会把录音留在本机，方便会后核对。',tStartMs:28000},
 {id:'three',track:'other',speaker:'王明',text:'下周二再一起检查进展。',tStartMs:47000}]});
-const sessions=[make('alpha','产品评审 · 九月计划'),make('beta','团队同步 · 设计讨论')];
+const sessions=[make('alpha','产品评审 · 九月计划'),make('beta','团队同步 · 设计讨论'),make('gamma','今天的语音输入','dictation'),make('long-recording','九月产品评审与设计讨论：确认交付范围、关键时间和下次会议安排')];
 const logs=[],pending=[];let state,update;
 const request=(action,input)=>{logs.push({action,...input});return new Promise(resolve=>pending.push({action,input,resolve}));};
 window.earshot={searchTranscripts:async()=>({ok:true,hits:[],truncated:false}),onChange:()=>()=>{},selectSession:async id=>{update(s=>({...s,selectedId:id,selected:s.sessions.find(v=>v.id===id)}));},
@@ -43,13 +43,55 @@ async function runElectron(config){
  const input=async(selector,value)=>{await run(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event('input',{bubbles:true}));})()`);await pause();};
  const key=async(selector,key,composing=false)=>{await run(`document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(key)},bubbles:true,cancelable:true,isComposing:${composing}}))`);await pause();};
  const submit=async selector=>{await run(`document.querySelector(${JSON.stringify(selector)}).requestSubmit()`);await pause();};
- const rowOpen=async()=>{await run(`document.querySelector('.session-row').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}))`);await pause();await click('.session-menu button','改名');};
- const titleOpen=async()=>{await click('.session-title-menu');await click('.session-menu button','改名');};
+ const rowOpen=async()=>{await run(`document.querySelector('.session-row > .sl-row').dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,detail:2}))`);await pause();};
+ const titleOpen=async()=>{await run(`document.querySelector('.session-title h2').dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,detail:2}))`);await pause();};
  const groupOpen=async()=>{await click('.t-name.click');await until(`Boolean(document.querySelector('.pop input'))`);};
  const cancel=async selector=>click(selector+' button','取消');
  const screenshot=async name=>{await pause();const path=join(config.evidence,name+'.png');writeFileSync(path,(await win.webContents.capturePage()).toPNG());screenshots.push(path);};
  const geometry=async(selector)=>run(`(()=>{const form=document.querySelector(${JSON.stringify(selector)}),box=form.getBoundingClientRect(),input=form.querySelector('input').getBoundingClientRect(),buttons=Array.from(form.querySelectorAll('.name-editor-actions button')).map(el=>el.getBoundingClientRect());return input.left>=box.left&&input.right<=box.right+1&&buttons[1].left-buttons[0].right>=7&&buttons.every(b=>b.right<=box.right+1)&&document.documentElement.scrollWidth<=innerWidth;})()`);
+ const sidebarGeometry=async id=>run(`(()=>{
+  const row=document.querySelector('.session-row[data-session-id="'+${JSON.stringify(id)}+'"]');
+  const measure=el=>{if(!el)return null;const r=el.getBoundingClientRect(),s=getComputedStyle(el);return {
+   rect:{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height},
+   clientWidth:el.clientWidth,scrollWidth:el.scrollWidth,scrollLeft:el.scrollLeft,
+   style:{display:s.display,boxSizing:s.boxSizing,width:s.width,minWidth:s.minWidth,maxWidth:s.maxWidth,overflowX:s.overflowX,
+    gridTemplateColumns:s.gridTemplateColumns,gridAutoColumns:s.gridAutoColumns,flex:s.flex,paddingLeft:s.paddingLeft,paddingRight:s.paddingRight}
+  };};
+  return {viewport:{width:innerWidth,height:innerHeight},main:measure(document.querySelector('.sl-main')),sidebar:measure(document.querySelector('.slist')),
+   group:measure(row.closest('.session-group')),grid:measure(row.parentElement),row:measure(row),wrapper:measure(row.querySelector('.session-row-edit')),
+   form:measure(row.querySelector('.name-editor')),input:measure(row.querySelector('input')),label:measure(row.querySelector('label')),actions:measure(row.querySelector('.name-editor-actions')),
+   buttons:Array.from(row.querySelectorAll('.name-editor-actions button')).map(measure),
+   rows:Array.from(document.querySelectorAll('.session-row')).map(el=>({id:el.dataset.sessionId,...measure(el)}))};
+ })()`);
+ const sidebarContained=value=>{
+  const viewport=value.main.rect;
+  const boxes=[value.row,value.wrapper,value.form,value.input,value.label,value.actions,...value.buttons,...value.rows].filter(Boolean);
+  return value.main.scrollWidth<=value.main.clientWidth+1&&Math.abs(value.main.scrollLeft)<=1&&boxes.every(box=>box.rect.left>=viewport.left-1&&box.rect.right<=viewport.right+1);
+ };
  await until(`Boolean(document.querySelector('.session-title h2'))`);
+ // Check the scroll viewport as well as each editor control. A form can contain
+ // its input while its grid track silently exceeds and scrolls the whole sidebar.
+ const sidebarCases=[];
+ for(const [size,width,height] of [['default',1100,740],['compact',860,700]])for(const [kind,id] of [['recording','alpha'],['dictation','gamma']]){
+  win.setSize(width,height);await pause();
+  const selector='.session-row[data-session-id="'+id+'"]';
+  await run(`qa.select(${JSON.stringify(id)});document.querySelector('.sl-main').scrollLeft=0`);await pause();
+  const entry={size,kind,window:{width,height},before:await sidebarGeometry(id)};sidebarCases.push(entry);
+  await run(`document.querySelector(${JSON.stringify(selector+' > .sl-row')}).dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,detail:2}))`);
+  await until(`Boolean(document.querySelector(${JSON.stringify(selector+' input')}))`);await pause();
+  entry.opened=await sidebarGeometry(id);await screenshot(size+'-'+kind+'-sidebar-open');
+  await input(selector+' input','九月产品评审与设计讨论：确认交付范围、关键时间和下次会议安排');
+  entry.typed=await sidebarGeometry(id);await screenshot(size+'-'+kind+'-sidebar-typed');
+  await run(`document.querySelector('.sl-main').scrollLeft=document.querySelector('.sl-main').scrollWidth`);await pause();
+  entry.horizontalScroll=await sidebarGeometry(id);await screenshot(size+'-'+kind+'-sidebar-horizontal-scroll');
+  await run(`document.querySelector('.sl-main').scrollLeft=0`);await cancel(selector+' .name-editor');
+  entry.cancelled=await sidebarGeometry(id);
+ }
+ writeFileSync(join(config.evidence,'sidebar-geometry.json'),JSON.stringify(sidebarCases,null,2));
+ for(const entry of sidebarCases)for(const state of ['before','opened','typed','horizontalScroll','cancelled']){
+  check(sidebarContained(entry[state]),entry.size+' '+entry.kind+' '+state+': sidebar rows and rename controls stay within the unscrolled list viewport');
+ }
+ win.setSize(1180,820);await run(`qa.select('alpha')`);await pause();
  await rowOpen();check(await run(`document.activeElement===document.querySelector('.session-row input')&&document.activeElement.selectionEnd===document.activeElement.value.length`),'sidebar opens with focused selected title');
  check(await geometry('.session-row .name-editor'),'sidebar input and separated buttons fit within padded form');
  check(await run(`document.querySelector('.session-row button[type=submit]').disabled`),'unchanged title cannot submit');

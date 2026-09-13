@@ -117,6 +117,7 @@ export function installDevMock(): void {
   const state: AppSnapshot = {
     hasApiKey: !(scenario === "first" || scenario === "nokey"),
     autoDiarize: true,
+    autoTitle: false,
     permissions:
       scenario === "first"
         ? { microphone: "undetermined", screen: "undetermined" }
@@ -368,6 +369,7 @@ export function installDevMock(): void {
       emit();
     },
     setSharedMicrophone: async (on: boolean) => { state.sharedMicrophone = on; emit(); },
+    setAutoTitle: async (on: boolean) => { state.autoTitle = on; emit(); return ok; },
     renameSession: async ({sessionId,title}) => {
       const target = state.sessions.find(row => row.id === sessionId);
       const name = title.trim();

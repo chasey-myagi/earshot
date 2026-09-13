@@ -22,6 +22,7 @@ import * as playbackModule from "./playback.ts";
 import * as exportsModule from "./export.ts";
 import * as transcribing from "./live-transcriber.ts";
 import * as speakerNamesModule from "./speaker-names.ts";
+import { createSessionTitles } from "./jobs/session-title.ts";
 
 const require = createRequire(import.meta.url);
 const compiled = ts.transpileModule(readFileSync(new URL("./index.ts", import.meta.url), "utf8"), {
@@ -45,6 +46,7 @@ async function launch(t, overrides = {}) {
   let store;
   let captureOptions;
   let writers;
+  let titleController;
   class Window {
     visible = false;
     destroyed = false;
@@ -96,11 +98,16 @@ async function launch(t, overrides = {}) {
     } },
     "./jobs/orchestrate": {
       ...orchestration,
+      queuePost: (queue, ...args) => orchestration.queuePost({ ...queue, ...(overrides.post ? { process: overrides.post } : {}) }, ...args),
       settleSession: (...args) => { orchestration.settleSession(...args); calls.settled.push(args[1]); },
       finishRecordingJobs: (queue, id, reason) => orchestration.finishRecordingJobs({
         ...queue, process: async () => { calls.queued.push(id); },
       }, id, reason),
     },
+    "./jobs/session-title": { createSessionTitles: options => {
+      titleController = createSessionTitles({ ...options, generate: overrides.titleGenerate ?? (async () => { throw new Error('Cloud titles disabled in fixture'); }) });
+      return titleController;
+    } },
     "./store/key": { readStoredKey: () => Object.hasOwn(overrides, "key") ? overrides.key : "fixture-only-not-a-key" },
     "./live": live,
     "./playback": overrides.realPlayback ? { createPlaybackController: options => playbackModule.createPlaybackController({ ...options, timeoutMs: overrides.mediaTimeout ?? 1000 }) } : {
@@ -130,7 +137,7 @@ async function launch(t, overrides = {}) {
     console: { log() {}, error() {} }, process, AbortController, setTimeout, clearTimeout,
   });
   await ready;
-  return { store, calls, windows, events, root, trays: tray.trays,
+  return { store, calls, windows, events, root, trays: tray.trays, titleController,
     mediaReady: (sender = windows[0].webContents) => handlers.get("app:playbackHost")({ sender }, true),
     mediaReport: (report, sender = windows[0].webContents) => handlers.get("app:playbackReport")({ sender }, report),
     crash: () => captureOptions.onCrash(),
@@ -778,6 +785,88 @@ test('real import IPC commits audio and single-track metadata, reports saved aud
   assert.match(doc.jobs.refined.reason, /音频已保存/);
   assert.equal(readFileSync(join(h.store.sessionDir(doc.id), 'original.wav'), 'utf8'), 'encoded fixture');
   assert.equal(readFileSync(join(h.store.sessionDir(doc.id), 'system.wav')).length, 32044);
+});
+
+function readyTitleRecording(store) {
+  const doc = store.createRecording();
+  store.finalize(doc.id, 'complete', { durationSec: 60 });
+  writeFileSync(join(store.sessionDir(doc.id), 'refined-v1.json'), JSON.stringify({ turns: [{ id: 'one', track: 'you', speaker: '你', tStartMs: 0, text: '会'.repeat(200) }] }));
+  store.patchJobs(doc.id, { refined: { status: 'done', current: 'refined-v1.json' } });
+  return store.readSession(doc.id);
+}
+
+test('automatic title IPC persists a validated setting and only enrolls later recordings', async t => {
+  const h = await launch(t);
+  assert.equal(h.snap().autoTitle, false);
+  const old = readyTitleRecording(h.store);
+  for (const invalid of [null, 'true', 1, {}]) assert.equal((await h.invoke('setAutoTitle', invalid)).ok, false);
+  assert.equal(h.snap().autoTitle, false);
+  assert.equal((await h.invoke('setAutoTitle', true)).ok, true);
+  assert.equal(h.snap().autoTitle, true);
+  assert.equal(h.store.readSession(old.id).autoTitle, undefined);
+  assert.equal(readyTitleRecording(h.store).autoTitle.state, 'pending');
+  assert.equal((await h.invoke('setAutoTitle', false)).ok, true);
+  assert.equal(h.snap().autoTitle, false);
+});
+
+test('post queue delivers refined completion to automatic naming, and manual rename IPC cancels its late result', async t => {
+  const gate = deferred(), calls = [];
+  const h = await launch(t, {
+    titleGenerate: async opts => { calls.push(opts); return gate.promise; },
+    post: async ({ store, sessionId, signal, onRefinedReady }) => {
+      store.patchJobs(sessionId, { refined: { status: 'done', current: 'refined-v1.json' } });
+      onRefinedReady(sessionId, signal);
+    },
+  });
+  await h.invoke('setAutoTitle', true);
+  const doc = readyTitleRecording(h.store);
+  assert.equal(h.invoke('retryJob', { sessionId: doc.id, job: 'refined' }).ok, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 1);
+  assert.equal(h.invoke('renameSession', { sessionId: doc.id, title: '保留手动标题' }).ok, true);
+  assert.equal(calls[0].signal.aborted, true);
+  gate.resolve('迟到标题'); await h.titleController.cancel(doc.id);
+  assert.equal(h.snap().sessions.find(row => row.id === doc.id).title, '保留手动标题');
+  assert.equal(h.store.readSession(doc.id).titleSource, 'manual');
+});
+
+test('delete IPC waits for the title writer before removing the directory, and undo does not revive it', async t => {
+  const gate = deferred(), calls = [];
+  const h = await launch(t, { titleGenerate: async opts => { calls.push(opts); return gate.promise; } });
+  await h.invoke('setAutoTitle', true);
+  const doc = readyTitleRecording(h.store);
+  const title = h.titleController.start(doc.id); await Promise.resolve();
+  const removing = h.invoke('deleteSession', doc.id);
+  assert.equal(calls[0].signal.aborted, true);
+  assert.ok(h.store.readSession(doc.id));
+  gate.resolve('被删除的迟到标题'); await title;
+  assert.equal((await removing).ok, true);
+  assert.equal(h.store.readSession(doc.id), null);
+  assert.equal(h.invoke('undoDeleteSession', doc.id).ok, true);
+  assert.equal(h.store.readSession(doc.id).title, doc.title);
+  await h.titleController.start(doc.id); assert.equal(calls.length, 1);
+});
+
+test('quit aborts and awaits automatic titles; failed playback cleanup leaves future title generation usable', async t => {
+  const gate = deferred(), calls = [];
+  let failCleanup = true;
+  const h = await launch(t, { titleGenerate: async opts => { calls.push(opts); return gate.promise; },
+    playbackStop: async () => { if (failCleanup) throw new Error('fixture cleanup failure'); } });
+  await h.invoke('setAutoTitle', true);
+  const doc = readyTitleRecording(h.store);
+  const title = h.titleController.start(doc.id); await Promise.resolve();
+  h.events.get('before-quit')({ preventDefault() {} });
+  assert.equal(calls[0].signal.aborted, true);
+  assert.equal(h.calls.quits, 0);
+  gate.resolve('后续标题'); await title; await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.calls.quits, 0); assert.equal(h.store.readSession(doc.id).title, doc.title);
+  const later = readyTitleRecording(h.store);
+  await h.titleController.start(later.id);
+  assert.equal(h.store.readSession(later.id).title, '后续标题');
+  failCleanup = false;
+  h.events.get('before-quit')({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.calls.quits, 1);
 });
 
 test('import picker and decoder serialize admission; cancel removes incomplete audio and quit awaits cleanup', async t => {

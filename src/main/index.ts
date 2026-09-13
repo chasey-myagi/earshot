@@ -59,6 +59,7 @@ import { createRecordingActions } from "./recording-actions";
 import { createMenubar } from "./menubar";
 import { configureHotwords, getHotwordStatus, saveHotwords, syncHotwords } from "./providers/hotwords";
 import { configureUsage, getUsageSummary } from "./providers/usage";
+import { createSessionTitles } from "./jobs/session-title";
 import { importAudio, AUDIO_IMPORT_EXTENSIONS } from "./import-audio";
 import { decodeWithChromium } from "./import-audio-electron";
 
@@ -74,6 +75,7 @@ let dictation: ReturnType<typeof createDictationRuntime>;
 let store: SessionStore;
 let deletion: ReturnType<typeof createSessionDeletion>;
 let speakerNames: ReturnType<typeof createSpeakerNames>;
+let sessionTitles: ReturnType<typeof createSessionTitles>;
 let permissions: ProbePermissions = { microphone: "undetermined", screen: "undetermined" };
 let live: LiveRec | null = null;
 let selectedId: string | null = null;
@@ -205,6 +207,7 @@ function postQueue() {
     jobFailReasons,
     apiKey: readApiKey(),
     onChange: broadcast,
+    onRefinedReady: (id: string, signal?: AbortSignal) => { void sessionTitles?.start(id, signal); },
   };
 }
 
@@ -462,30 +465,22 @@ function registerIpc(): void {
     if (raw && typeof raw === "object" && deletion.blocked((raw as RenameSessionInput).sessionId)) return { ok: false, error: "会话正在删除" };
     const result = store.renameSession(raw);
     if (result.ok) {
+      void sessionTitles?.cancel((raw as RenameSessionInput).sessionId);
       broadcast();
     }
     return result;
   });
 
-  const deletionDialogs = new Set<string>();
   ipcMain.handle("app:deleteSession", async (event, id: unknown): Promise<ActionResult> => {
     if (typeof id !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) return { ok: false, error: "找不到这场会" };
     const doc = store.readSession(id);
     if (!doc) return { ok: false, error: "找不到这场会" };
     if (doc.status === "recording" || live?.sessionId === id) return { ok: false, error: "请先停止录制并保存" };
     const parent = BrowserWindow.fromWebContents(event.sender);
-    if (!parent || parent !== library || deletionDialogs.has(id)) return { ok: false, error: "请先完成当前删除确认" };
-    deletionDialogs.add(id);
-    try {
-      const answer = await dialog.showMessageBox(parent, {
-        type: "warning", buttons: ["取消", "删除会话"], defaultId: 0, cancelId: 0,
-        message: `删除「${doc.title}」？`,
-        detail: "录音与转录一起删除，已记住的人物保留。后台任务将停止，8 秒撤销期后移到系统废纸篓。已导出的副本不受影响。",
-        noLink: true,
-      });
-      return answer.response === 1 ? await deletion.remove(id) : { ok: true };
-    } catch { return { ok: false, error: "删除没有完成，请重试" }; }
-    finally { deletionDialogs.delete(id); }
+    if (!parent || parent !== library) return { ok: false, error: "请在会话列表中删除" };
+    // The shared deletion service retains each directory for undo, then uses OS Trash.
+    // One request per selected row avoids a confirmation dialog for every batch member.
+    return deletion.remove(id);
   });
   ipcMain.handle("app:undoDeleteSession", (_event, id: unknown): ActionResult => deletion.undo(id));
   ipcMain.handle("app:revealSession", (_event, id: unknown): ActionResult => {
@@ -596,6 +591,7 @@ function registerIpc(): void {
     store.setAutoDiarize(on);
     broadcast();
   });
+  ipcMain.handle("app:setAutoTitle", (_event, on: unknown): Promise<ActionResult> => sessionTitles.setEnabled(on));
   ipcMain.handle("app:setSharedMicrophone", (_event, on: unknown): void => {
     if (typeof on !== "boolean") return;
     store.setSharedMicrophone(on);
@@ -715,6 +711,8 @@ app.whenReady().then(async () => {
     configureHotwords(join(supportDir(), 'hotwords.json'), readApiKey);
     configureUsage(join(supportDir(), 'usage.json'));
     speakerNames = createSpeakerNames({ store, onChange: broadcast });
+    sessionTitles = createSessionTitles({ store, apiKey: readApiKey, changed: broadcast,
+      blocked: id => live?.sessionId === id || Boolean(deletion?.blocked(id)), quitting: () => quitting });
     deletion = createSessionDeletion({
       store,
       active: id => live?.sessionId === id,
@@ -722,6 +720,7 @@ app.whenReady().then(async () => {
         if (dictation?.sessionId() === id) await dictation.cancel();
         speakerNames.invalidate(id);
         jobAbort.get(id)?.abort();
+        await sessionTitles.cancel(id);
         await jobPending.get(id);
         if (playback.snapshot()?.sessionId === id) await playback.stopAndWait();
         jobFailReasons.delete(id);
@@ -759,6 +758,7 @@ app.whenReady().then(async () => {
     console.log("[earshot] library window");
     await refreshPermissions();
     recoverStuckJobs(postQueue());
+    void sessionTitles.recover();
     for (const id of orphanIds) {
       if (sessionHasWavBody(store.sessionDir(id))) void enqueuePost(id, "all");
     }
@@ -781,8 +781,9 @@ app.on("before-quit", (event) => {
   quitting = true;
   speakerNames?.close();
   importAbort?.abort();
+  const titleClosing = sessionTitles?.cancelAll();
   event.preventDefault();
-  void Promise.all([recordingActions.stop("quit"), importPending]).then(async ([result]) => {
+  void Promise.all([recordingActions.stop("quit"), importPending, titleClosing]).then(async ([result]) => {
     if (!result.ok && recordingActions.phase() !== "idle") {
       quitting = false;
       navigation.openLibrary();

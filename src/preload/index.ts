@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld("earshot", {
   retryRealtime: (): Promise<ActionResult> => ipcRenderer.invoke("app:retryRealtime"),
   selectSession: (id: string): Promise<void> => ipcRenderer.invoke("app:selectSession", id),
   setAutoDiarize: (on: boolean): Promise<void> => ipcRenderer.invoke("app:setAutoDiarize", on),
+  setAutoTitle: (on: boolean): Promise<ActionResult> => ipcRenderer.invoke("app:setAutoTitle", on),
   setSharedMicrophone: (on: boolean): Promise<void> => ipcRenderer.invoke("app:setSharedMicrophone", on),
   renameSpeaker: (input: RenameSpeakerInput): Promise<RenameSpeakerResult> =>
     ipcRenderer.invoke("app:renameSpeaker", input),

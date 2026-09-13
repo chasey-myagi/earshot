@@ -11,11 +11,10 @@ import type {
   SessionDetail,
   SessionSummary,
 } from "../shared/types";
-import { formatDurationLong, formatDurationShort, formatListWhen, formatStartTime, isSameDay } from "./format";
+import { formatDurationLong, formatDurationShort, formatListWhen, formatStartTime } from "./format";
 import { MicIcon, PlayIcon, PauseIcon, ScreenIcon } from "./icons";
 import appIcon from "../../assets/earshot-icon.png";
 import { anchorPopover } from "./popover";
-import { sessionSideHint } from "./sessionSide";
 import { TranscriptView, type ReadingPositions } from "./TranscriptView";
 import { RecordingClock, RealtimeNotice, StopRecording } from "./RecordingControls";
 import { NameEditor } from "./NameEditor";
@@ -23,13 +22,14 @@ import { SessionTitle } from "./SessionTitle";
 import { ExportMenu } from "./ExportMenu";
 import { PlaybackBar } from "./PlaybackBar";
 import { DictationPermission, DictationSettings } from "./Dictation";
-import { SessionRow, DeletionNotices } from "./SessionRow";
+import { DeletionNotices } from "./SessionRow";
 import { workBarMessage, workFeedback } from "./workBar";
 import { voiceRegistrationMessage } from "./voice-status";
-import { SearchPanel } from "./SearchPanel";
+import { SessionList } from "./SessionList";
 import { TranscriptEditor } from "./TranscriptEditor";
 import { HotwordSettings } from "./HotwordSettings";
 import { UsageSettings } from "./UsageSettings";
+import { AutoTitleSetting } from "./AutoTitleSetting";
 import type { TranscriptSearchHit } from "../shared/transcript-tools";
 
 type ExportNotice = { text: string; saved?: { id: string; path: string } };
@@ -78,6 +78,7 @@ type LibraryProps = {
 export function Library({ snap, refresh }: LibraryProps) {
   const first = snap.sessions.length === 0;
   const [pane, setPane] = useState<RightPane>("session");
+  const [listNavigation, setListNavigation] = useState<{ id: string | null } | null>(null);
   const [keyDraft, setKeyDraft] = useState("");
   const [keyError, setKeyError] = useState<string | null>(null);
   const [keyBusy, setKeyBusy] = useState(false);
@@ -113,7 +114,8 @@ export function Library({ snap, refresh }: LibraryProps) {
   const [focusTurn, setFocusTurn] = useState<{ sessionId: string; turnId: string; request: number } | null>(null);
   const searchRefreshKey = JSON.stringify([snap.sessions, snap.selected?.turns.map(turn => [turn.id, turn.correction?.revision]), snap.selected?.transcriptToolsError]);
   function openPane(next: RightPane) { navigationRequest.current += 1; setPendingSearch(null); setFocusTurn(null); setPane(next); }
-  function openSession(id: string) { openPane("session"); void window.earshot.selectSession(id); }
+  function selectFromList(id: string) { openPane("session"); void window.earshot.selectSession(id); }
+  function openSession(id: string) { setListNavigation({ id }); selectFromList(id); }
   async function searchSelect(hit: TranscriptSearchHit) {
     const request = ++navigationRequest.current;
     setPane("session"); setFocusTurn(null); setPendingSearch({ hit, request }); setActionError(null);
@@ -144,7 +146,7 @@ export function Library({ snap, refresh }: LibraryProps) {
     finally { importing.current = false; setImportBusy(false); }
   }
 
-  useEffect(() => { if (snap.libraryRequest) openPane("session"); }, [snap.libraryRequest]);
+  useEffect(() => { if (snap.libraryRequest) { setListNavigation({ id: snap.selectedId ?? snap.selected?.id ?? null }); openPane("session"); } }, [snap.libraryRequest]);
   useEffect(() => { if (snap.settingsRequest) openPane("settings"); }, [snap.settingsRequest]);
 
   useEffect(() => {
@@ -158,7 +160,7 @@ export function Library({ snap, refresh }: LibraryProps) {
     const firstSession = snap.sessions[0];
     if (!firstSession || askedSelect.current === firstSession.id) return;
     askedSelect.current = firstSession.id;
-    void window.earshot.selectSession(firstSession.id);
+    openSession(firstSession.id);
   }, [first, pane, snap.selected, snap.selectedId, snap.sessions]);
 
   useEffect(() => {
@@ -352,8 +354,9 @@ export function Library({ snap, refresh }: LibraryProps) {
           <SessionList
             sessions={snap.sessions}
             selectedId={pane === "session" ? snap.selectedId ?? selected?.id ?? null : null}
+            navigation={listNavigation}
             settingsOn={settingsOpen}
-            onSelect={openSession}
+            onSelect={selectFromList}
             onSearchSelect={hit => void searchSelect(hit)}
             searchRefreshKey={searchRefreshKey}
             onSettings={() => openPane("settings")}
@@ -485,70 +488,6 @@ export function Library({ snap, refresh }: LibraryProps) {
         blocked={Boolean(snap.audioImport) || Boolean(snap.recording) || Boolean(snap.capturePhase && snap.capturePhase !== "idle")}
         onOpen={openSession} /> : null}
     </div>
-  );
-}
-
-function SessionList({
-  sessions,
-  selectedId,
-  settingsOn,
-  onSelect,
-  onSettings,
-  onSearchSelect,
-  searchRefreshKey,
-}: {
-  sessions: SessionSummary[];
-  selectedId: string | null;
-  settingsOn: boolean;
-  onSelect: (id: string) => void;
-  onSettings: () => void;
-  onSearchSelect: (hit: TranscriptSearchHit) => void;
-  searchRefreshKey: string;
-}) {
-  const [filter, setFilter] = useState("all");
-  const visible = sessions.filter(row => filter === "all" || (row.kind ?? "recording") === filter);
-  const now = new Date();
-  const today = visible.filter((row) => isSameDay(row.startedAt, now));
-  const earlier = visible.filter((row) => !isSameDay(row.startedAt, now));
-
-  return (
-    <aside className="slist">
-      <SearchPanel search={window.earshot.searchTranscripts} onSelect={hit => { setFilter("all"); onSearchSelect(hit); }} refreshKey={searchRefreshKey} />
-      <div className="session-filter" role="group" aria-label="筛选会话">{[['all', '全部'], ['recording', '录制'], ['dictation', '输入']].map(([value, label]) =>
-        <button key={value} type="button" aria-pressed={filter === value} onClick={() => { setFilter(value); const next = sessions.filter(row => value === 'all' || (row.kind ?? 'recording') === value); if (!next.some(row => row.id === selectedId) && next[0]) onSelect(next[0].id); }}>{label}</button>)}</div>
-      <div className="sl-main" tabIndex={0} aria-label="会话列表">
-        {!visible.length && <p className="why filter-empty">暂无此类会话</p>}
-        <Group label="今天" rows={today} selectedId={selectedId} settingsOn={settingsOn} onSelect={onSelect} />
-        <Group label="更早" rows={earlier} selectedId={selectedId} settingsOn={settingsOn} onSelect={onSelect} />
-      </div>
-      <div className="sl-foot">
-        <button type="button" className={`sl-row${settingsOn ? " on" : ""}`} aria-current={settingsOn ? "page" : undefined} onClick={onSettings}>
-          <span className="sl-title">设置</span>
-        </button>
-      </div>
-    </aside>
-  );
-}
-
-function Group({
-  label,
-  rows,
-  selectedId,
-  settingsOn,
-  onSelect,
-}: {
-  label: string;
-  rows: SessionSummary[];
-  selectedId: string | null;
-  settingsOn: boolean;
-  onSelect: (id: string) => void;
-}) {
-  if (rows.length === 0) return null;
-  return (
-    <>
-      <div className="sl-group">{label}</div>
-      {rows.map(row => <SessionRow key={row.id} row={row} selected={!settingsOn && row.id === selectedId} onSelect={onSelect} />)}
-    </>
   );
 }
 
@@ -759,15 +698,17 @@ function SettingsPane({
         <HotwordSettings subscribe={window.earshot.onChange} load={window.earshot.hotwordStatus} save={window.earshot.saveHotwords} sync={window.earshot.syncHotwords} />
         <section className="settings-section" aria-labelledby="recording-heading"><h3 id="recording-heading">录制</h3>
           <div className="set-card"><div className="set-row">
-            <div>自动区分说话人<p className="why">停止录制后区分不同声音，从下一次录制生效。</p></div>
+            <div>自动区分说话人<p className="why">录音结束后，按声音区分说话人。</p></div>
             <button type="button" className={`knob${snap.autoDiarize ? " on" : ""}`} role="switch" aria-checked={snap.autoDiarize}
               aria-label="自动区分说话人" onClick={() => void window.earshot.setAutoDiarize(!snap.autoDiarize)} />
-          </div></div>
-          <div className="set-card"><div className="set-row">
-            <div>共用麦克风<p className="why">会议室多人使用同一支麦克风时开启。从下一次录制生效；自动区分开启时，也会区分现场声音。</p></div>
+          </div>
+          <div className="set-row">
+            <div>共用麦克风<p className="why">多人使用同一支麦克风时开启。配合自动区分，可识别现场不同的说话人。</p></div>
             <button type="button" className={`knob${snap.sharedMicrophone ? " on" : ""}`} role="switch" aria-checked={Boolean(snap.sharedMicrophone)}
               aria-label="共用麦克风" onClick={() => void window.earshot.setSharedMicrophone(!snap.sharedMicrophone)} />
-          </div></div>
+          </div>
+          <AutoTitleSetting enabled={Boolean(snap.autoTitle)} save={window.earshot.setAutoTitle} /></div>
+          <p className="settings-caption">录制选项从下一次录制生效；关闭自动命名会立即停止生成。</p>
         </section>
         <section className="settings-section" aria-labelledby="cloud-heading"><h3 id="cloud-heading">云端服务</h3>
         <div className="set-card">
@@ -781,7 +722,7 @@ function SettingsPane({
             saved={keySaved}
           />
         </div>
-        <p className="settings-caption">密钥仅保存在这台 Mac。转写直接连接百炼，使用你自己的账户额度。</p>
+        <p className="settings-caption">密钥保存在本机，费用由你的百炼账户结算。</p>
         </section>
         <UsageSettings load={window.earshot.usageSummary} openBilling={() => void window.earshot.openBilling()} />
         <section className="settings-section" aria-labelledby="permission-heading"><h3 id="permission-heading">系统权限</h3>
@@ -892,7 +833,7 @@ function SessionPane({
     <div className="col">
       <div className="sess-head">
         <div className="grow">
-          <SessionTitle key={summary.id} sessionId={summary.id} title={summary.title} disabled={captureOwned || summary.status === "recording"} />
+          <SessionTitle key={summary.id} sessionId={summary.id} title={summary.title} titleSource={summary.titleSource} titleRevision={summary.titleRevision} disabled={captureOwned || summary.status === "recording"} />
           <p className="sess-meta">
             {formatListWhen(summary.startedAt)} {formatStartTime(summary.startedAt)} · {formatDurationLong(summary.durationSec)}
           </p>
@@ -1096,7 +1037,7 @@ function DictationDetail({ detail, editingBlocked, actionError }: { detail: Sess
   const turn = detail.turns[0];
   const text = detail.dictation?.text ?? '';
   return <div className="col"><div className="sess-head"><div className="grow">
-    <SessionTitle sessionId={detail.id} title={detail.title} />
+    <SessionTitle sessionId={detail.id} title={detail.title} titleSource={detail.titleSource} titleRevision={detail.titleRevision} />
     <p className="sess-meta">语音输入 · {formatListWhen(detail.startedAt)} {formatStartTime(detail.startedAt)} · {formatDurationShort(detail.durationSec)}</p>
   </div></div><div className="dictation-document">
     {actionError && <p className="tool-error" role="alert">{actionError}</p>}

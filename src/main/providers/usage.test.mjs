@@ -24,6 +24,32 @@ test('Beijing rate calculations preserve fractions and model tier boundaries', (
   assert.equal(estimateCny({ ...base, model: 'unknown' }), null);
   assert.equal(estimateCny({ ...base, model: 'qwen3.8-flash' }), null);
 });
+test('qwen-flash title pricing uses Beijing decimal token tier boundaries', () => {
+  const title = { ...base, model: 'qwen-flash', kind: 'session-title', audioSeconds: undefined, outputTokens: 64 };
+  for (const [inputTokens, inputRate, outputRate] of [[6000, .15, 1.5], [128000, .15, 1.5], [128001, .6, 6], [256000, .6, 6], [256001, 1.2, 12]]) {
+    assert.equal(estimateCny({ ...title, inputTokens }), (inputTokens * inputRate + 64 * outputRate) / 1e6);
+  }
+  assert.equal(estimateCny({ ...title, inputTokens: 6000 }), .000996);
+  assert.equal(estimateCny(title), null);
+  assert.equal(estimateCny({ ...title, inputTokens: 6000, outputTokens: undefined }), null);
+});
+test('title usage upgrades one request, persists its kind and prices, and deduplicates across restart', t => {
+  const path = fixture(t), ledger = createUsageLedger(path, () => now);
+  const title = { id: 'same-request', at: now, kind: 'session-title', model: 'qwen-flash', measurement: 'local', outcome: 'uncertain' };
+  ledger.record(title);
+  assert.equal(ledger.summary().unconfirmedRequests, 1); assert.equal(ledger.summary().unpricedRequests, 1);
+  const confirmed = { ...title, measurement: 'provider', outcome: 'succeeded', inputTokens: 6000, outputTokens: 64 };
+  ledger.record(confirmed);
+  const restored = createUsageLedger(path, () => now);
+  restored.record(confirmed); restored.record(title);
+  const summary = restored.summary();
+  assert.equal(summary.requests, 1); assert.equal(summary.unconfirmedRequests, 0); assert.equal(summary.localMeasuredRequests, 0);
+  assert.equal(summary.inputTokens, 6000); assert.equal(summary.outputTokens, 64); assert.equal(summary.estimatedCny, .000996);
+  const raw = JSON.parse(readFileSync(path, 'utf8'));
+  assert.equal(raw.events[0].kind, 'session-title'); assert.match(raw.events[0].id, /^[a-f0-9]{64}$/);
+  restored.record({ ...confirmed, kind: 'polish' });
+  assert.equal(restored.summary().requests, 2, 'request identity is scoped by usage kind');
+});
 test('one paid task remains one request across cumulative results, restarts and success retries', t => {
   const path = fixture(t), ledger = createUsageLedger(path, () => now);
   ledger.record({ ...base, measurement: 'local', outcome: 'uncertain', audioSeconds: 30 });

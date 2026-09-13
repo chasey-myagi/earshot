@@ -58,6 +58,7 @@ export function assembleSnapshot(store: SessionStore, runtime: SnapshotRuntime):
   return {
     hasApiKey: runtime.hasApiKey,
     autoDiarize: store.readPrefs().autoDiarize,
+    autoTitle: store.readPrefs().autoTitle === true,
     sharedMicrophone: store.readPrefs().sharedMicrophone === true,
     permissions: runtime.permissions,
     playingSessionId: runtime.playingSessionId,

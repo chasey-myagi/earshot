@@ -49,21 +49,24 @@ export function HotwordSettings({ load, save, sync, subscribe }: {
     <h3 id="hotwords-heading">个人热词</h3>
     <div className="set-card provider-settings-body">
       <label htmlFor="personal-hotwords">人名、公司名与专业术语</label>
-      <p className="why" id="hotwords-help">每行一个，最多 {HOTWORD_LIMIT} 个。保存后供后续转写复用；词表会随转写或同步发送到百炼。</p>
-      <textarea id="personal-hotwords" aria-describedby="hotwords-help hotwords-validation" rows={5} maxLength={30000}
-        placeholder={'例如：\n矩阵起源\nMatrixOne\nEarshot'} value={draft} disabled={!status || busy} onChange={event => { form.current.draft = event.target.value; setDraft(event.target.value); }} />
+      <p className="why" id="hotwords-help">每行一个，最多 {HOTWORD_LIMIT} 个。热词会发送到百炼，用于后续转写。</p>
+      <textarea id="personal-hotwords" aria-describedby="hotwords-help hotwords-validation" rows={4} maxLength={30000}
+        placeholder={'例如：\n林晓\n向日葵工作室\n声纹识别'} value={draft} disabled={!status || busy} onChange={event => { form.current.draft = event.target.value; setDraft(event.target.value); }} />
       <div className="provider-settings-actions">
         <span className="settings-caption">{validation ?? `${count} / ${HOTWORD_LIMIT} 个`}</span>
-        <button type="button" className="btn ghost" disabled={!status || !dirty || busy || Boolean(validation)} onClick={() => void apply()}>{busy ? '保存与同步中…' : '保存热词'}</button>
+        <button type="button" className="btn ghost" disabled={!status || !dirty || busy || Boolean(validation)} onClick={() => void apply()}>{busy ? '保存中…' : '保存热词'}</button>
       </div>
       <p id="hotwords-validation" className="field-err" role={validation || error ? 'alert' : undefined}>{validation ?? error}</p>
-      {status ? <>
-        <div className="hotword-status" role="status">{status.message ?? (status.sync === 'empty' ? '尚未设置热词' : status.sync === 'ready' ? '已保存，支持的转写模型均已就绪' : '已保存到本机，录音词表待同步')}
+      {status && (status.words.length > 0 || status.updatedAt !== null || status.message) ? <>
+        <div className="hotword-status" role="status">{status.message ?? (status.sync === 'empty' ? '已停用' : status.sync === 'ready' ? '已保存' : '已保存，部分模型待同步')}
           {status.words.length > 0 && status.sync !== 'ready' ? <button type="button" className="field-link" disabled={busy || Boolean(dirty)} onClick={() => void apply(true)}>重试同步</button> : null}
         </div>
-        {status.words.length > 0 ? <ul className="hotword-models">{status.models.map(model => <li key={model.model}><span>{model.label}</span><span>{!model.supported ? '此模型不支持热词' : model.ready ? '就绪' : '待同步'}</span></li>)}</ul> : null}
+        {status.words.length > 0 ? <details className="settings-caption settings-note hotword-model-details"><summary>模型支持情况</summary><ul className="hotword-models">{status.models.map(model => <li key={model.model}><span>{model.label}</span><span>{!model.supported ? '不支持热词' : model.ready ? '已就绪' : '待同步'}</span></li>)}</ul></details> : null}
       </> : null}
     </div>
-    <p className="settings-caption">含中文的词最多 15 个字，英文最多 7 个单词。清空后保存可停用热词；云端旧词表仍会保留并占用额度，可在任务结束后通过百炼管理。</p>
+    <details className="settings-caption settings-note"><summary>填写与停用说明</summary>
+      <p>每条含中文的热词最多 15 个字，纯英文最多 7 个单词、100 个字符。清空后保存即可停用。</p>
+      <p>停用不会删除百炼上的旧词表，旧词表仍占用额度。可在转写任务结束后到百炼控制台管理。</p>
+    </details>
   </section>;
 }

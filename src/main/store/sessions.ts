@@ -10,8 +10,9 @@ import { repairSessionWavs, sessionDurationSec, sessionHasWavBody } from "./wav.
 
 import { writeJson } from "./json.ts";
 import { readRegistrations } from "../voiceprint/registration.ts";
+import { AUTO_TITLE_MAX_CHARACTERS } from "../../shared/auto-title.ts";
 
-const DEFAULT_PREFS: Prefs = { autoDiarize: true };
+const DEFAULT_PREFS: Prefs = { autoDiarize: true, autoTitle: false };
 
 function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -29,6 +30,10 @@ function asDocument(raw: unknown): SessionDocument | null {
     ...(row.kind === "dictation" && row.dictation && typeof row.dictation.text === "string" && typeof row.dictation.rawText === "string" ? { kind: "dictation" as const, dictation: row.dictation } : {}),
     id: row.id,
     title: typeof row.title === "string" ? row.title : "新的会话",
+    ...(["default", "manual", "auto"].includes(row.titleSource ?? "") && Number.isSafeInteger(row.titleRevision) && row.titleRevision! >= 0
+      ? { titleSource: row.titleSource, titleRevision: row.titleRevision } : {}),
+    ...(row.autoTitle && ["pending", "attempted", "applied", "skipped"].includes(row.autoTitle.state)
+      ? { autoTitle: { state: row.autoTitle.state, ...(typeof row.autoTitle.requestId === "string" ? { requestId: row.autoTitle.requestId } : {}) } } : {}),
     startedAt: row.startedAt,
     endedAt: typeof row.endedAt === "string" ? row.endedAt : null,
     durationSec: typeof row.durationSec === "number" ? row.durationSec : 0,
@@ -69,6 +74,7 @@ function toSummary(doc: SessionDocument): SessionSummary {
     ...(doc.kind === "dictation" ? { kind: "dictation" as const } : {}),
     id: doc.id,
     title: doc.title,
+    ...(doc.titleSource ? { titleSource: doc.titleSource, titleRevision: doc.titleRevision } : {}),
     startedAt: doc.startedAt,
     durationSec: doc.durationSec,
     status: doc.status,
@@ -146,7 +152,8 @@ export function createSessionStore(rootDir: string) {
     if (!existsSync(prefsPath())) return { ...DEFAULT_PREFS };
     try {
       const raw = readJson(prefsPath()) as Partial<Prefs>;
-      return { autoDiarize: raw.autoDiarize !== false, ...(typeof raw.sharedMicrophone === "boolean" ? { sharedMicrophone: raw.sharedMicrophone } : {}) };
+      return { autoDiarize: raw.autoDiarize !== false, autoTitle: raw.autoTitle === true,
+        ...(typeof raw.sharedMicrophone === "boolean" ? { sharedMicrophone: raw.sharedMicrophone } : {}) };
     } catch {
       return { ...DEFAULT_PREFS };
     }
@@ -155,6 +162,20 @@ export function createSessionStore(rootDir: string) {
   function setAutoDiarize(on: boolean): void {
     ensure();
     writeJson(prefsPath(), { ...readPrefs(), autoDiarize: on });
+  }
+
+  function setAutoTitle(on: boolean): void {
+    ensure();
+    const prefs = readPrefs();
+    if (on && prefs.autoTitle) return;
+    if (!on) writeJson(prefsPath(), { ...prefs, autoTitle: false });
+    // Turning it back on must not enroll recordings created or canceled earlier.
+    // Clear again before enabling: an earlier disable may have saved false but
+    // failed to update one read-only session. Do not resurrect its pending work.
+    for (const doc of listDocuments()) {
+      if (doc.autoTitle?.state === "pending") writeSession({ ...doc, autoTitle: { state: "skipped" } });
+    }
+    if (on) writeJson(prefsPath(), { ...prefs, autoTitle: true });
   }
 
   function setSharedMicrophone(on: boolean): void {
@@ -321,6 +342,9 @@ export function createSessionStore(rootDir: string) {
       schema_version: 1,
       id: randomUUID(),
       title: `${started.getMonth() + 1}月${started.getDate()}日 ${clock} 的录音`,
+      titleSource: "default",
+      titleRevision: 0,
+      ...(readPrefs().autoTitle ? { autoTitle: { state: "pending" as const } } : {}),
       startedAt: started.toISOString(),
       endedAt: null,
       durationSec: 0,
@@ -365,9 +389,40 @@ export function createSessionStore(rootDir: string) {
     const doc = readSession(sessionId);
     if (!doc) return { ok: false, error: "找不到这场会" };
     try {
-      writeSession({ ...doc, title });
+      writeSession({ ...doc, title, titleSource: "manual", titleRevision: (doc.titleRevision ?? 0) + 1,
+        ...(doc.autoTitle?.state === "pending" ? { autoTitle: { state: "skipped" } } : {}) });
       return { ok: true };
     } catch { return { ok: false, error: "名称没能保存，请重试" }; }
+  }
+
+  function autoTitleMatches(doc: SessionDocument | null, revision: number, artifact: string): doc is SessionDocument {
+    return Boolean(doc && doc.kind !== "dictation" && doc.status !== "recording" && doc.endedAt
+      && doc.titleSource === "default" && doc.titleRevision === revision
+      && doc.jobs.refined.status === "done" && doc.jobs.refined.current === artifact && readPrefs().autoTitle);
+  }
+
+  function beginAutoTitle(id: string, revision: number, artifact: string, requestId: string): boolean {
+    const doc = readSession(id);
+    if (!autoTitleMatches(doc, revision, artifact) || doc.autoTitle?.state !== "pending") return false;
+    // Persist before HTTP. An interrupted request must never be charged again automatically.
+    writeSession({ ...doc, autoTitle: { state: "attempted", requestId } });
+    return true;
+  }
+
+  function applyAutoTitle(id: string, input: { revision: number; artifact: string; requestId: string; title: string }): boolean {
+    const doc = readSession(id);
+    if (!autoTitleMatches(doc, input.revision, input.artifact) || doc.autoTitle?.state !== "attempted" || doc.autoTitle.requestId !== input.requestId) return false;
+    const title = input.title.trim();
+    if (!title || Array.from(title).length > AUTO_TITLE_MAX_CHARACTERS || /[\u0000-\u001f\u007f\u2028\u2029]/.test(title)) return false;
+    // One synchronous read/compare/write protects manual edits and preserves other writers' fields.
+    writeSession({ ...doc, title, titleSource: "auto", titleRevision: input.revision + 1,
+      autoTitle: { state: "applied", requestId: input.requestId } });
+    return true;
+  }
+
+  function skipAutoTitle(id: string): void {
+    const doc = readSession(id);
+    if (doc?.autoTitle?.state === "pending") writeSession({ ...doc, autoTitle: { state: "skipped" } });
   }
 
   function finalize(
@@ -479,6 +534,10 @@ export function createSessionStore(rootDir: string) {
     sessionDir,
     readPrefs,
     setAutoDiarize,
+    setAutoTitle,
+    beginAutoTitle,
+    applyAutoTitle,
+    skipAutoTitle,
     setSharedMicrophone,
     readPeople,
     readSession,

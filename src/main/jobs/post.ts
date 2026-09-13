@@ -24,6 +24,7 @@ export async function processSession(opts: {
   identify?: IdentifyFn;
   embed?: EmbedFn;
   onChange?: () => void;
+  onRefinedReady?: (sessionId: string, signal?: AbortSignal) => void;
   onFail?: (job: "refined" | "speakers", reason: string) => void;
   signal?: AbortSignal;
   retryUncertainSubmission?: boolean;
@@ -169,6 +170,10 @@ export async function processSession(opts: {
   }
 
   const after = opts.store.readSession(opts.sessionId);
+  if (!opts.signal?.aborted && after?.jobs.refined.status === "done") {
+    try { opts.onRefinedReady?.(opts.sessionId, opts.signal); }
+    catch { /* Optional naming must not change ASR or speaker results. */ }
+  }
   if (!opts.signal?.aborted && after?.jobs.speakers.status === "done") {
     try {
       await identify({ store: opts.store, sessionId: opts.sessionId, embed: opts.embed, signal: opts.signal });

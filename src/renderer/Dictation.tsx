@@ -78,29 +78,31 @@ export function DictationSettings({ status }: { status?: ShortcutStatus }) {
   return <div className="dictation-settings">
     <section className="settings-section" aria-labelledby="shortcut-heading"><h3 id="shortcut-heading">快捷键</h3>
       <div className="set-card">
-        <div className="set-row"><div>开始录制<p className="why">录制中再次按下，可回到当前录音。</p></div>{keyControl('meeting')}</div>
-        <div className="set-row"><div>语音输入<p className="why">按住说话，松开转写。Esc 取消。</p></div>{keyControl('dictation')}</div>
+        <div className="set-row"><div>开始录制<p className="why">录制中再次按下，回到当前录音。</p></div>{keyControl('meeting')}</div>
+        <div className="set-row"><div>语音输入<p className="why">按住说话，松开转写，Esc 取消。</p></div>{keyControl('dictation')}</div>
       </div>
       <p className="settings-caption">点击键位即可更改。</p>
     </section>
     <section className="settings-section" aria-labelledby="dictation-heading"><h3 id="dictation-heading">语音输入</h3>
     <div className="set-card">
-    <div className="set-row"><div>开启语音输入<p className="why">使用麦克风收音，转写自动保存在会话列表。</p></div>
+    <div className="set-row"><div>开启语音输入<p className="why">用麦克风说话，文字自动保存到会话。</p></div>
       <button type="button" className={`knob${draft.enabled ? ' on' : ''}`} role="switch" aria-label="语音输入" aria-checked={draft.enabled} disabled={busy} onClick={() => void save({ ...draft, enabled: !draft.enabled })} /></div>
-    <div className="set-row"><div>自动填入<p className="why">说完填入原来的位置，不自动发送。关闭后显示结果，手动复制。</p></div>
+    <div className="set-row"><div>自动填入<p className="why">说完填入原输入框，不会发送。关闭后可手动复制。</p></div>
       <button type="button" className={`knob${draft.delivery === 'direct' ? ' on' : ''}`} role="switch" aria-label="自动填入" aria-checked={draft.delivery === 'direct'}
         disabled={busy || !draft.enabled} onClick={() => void save({ ...draft, delivery: draft.delivery === 'direct' ? 'preview' : 'direct' })} /></div>
     <div className="set-row"><div>语音识别模型<p className="why">按录音时长计费，{DICTATION_MODELS.find(model => model.id === models.asr)?.price}。</p></div>
       <select aria-label="语音识别模型" value={models.asr} disabled={busy || !draft.enabled} onChange={event => void save({ ...draft, models: { ...models, asr: event.target.value as ModelPrefs['asr'] } })}>
         {DICTATION_MODELS.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
       </select></div>
-    <div className="set-row"><div>文字整理<p className="why">调整标点、去除口头重复。会稍慢，原始转写会保留。</p></div>
+    <div className="set-row"><div>文字整理<p className="why">整理标点和口头重复，保留原始转写。开启后会稍慢。</p></div>
       <select aria-label="文字整理" value={models.polish} disabled={busy || !draft.enabled} onChange={event => void save({ ...draft, models: { ...models, polish: event.target.value as ModelPrefs['polish'] } })}>
         {POLISH_MODELS.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
       </select></div>
     </div>
-    <p className="settings-caption">各应用统一通过临时剪贴板粘贴。位置变化时保留文字；无法确认时请检查输入框。粘贴后恢复原剪贴板，期间的新复制会保留。</p>
-    <details className="settings-caption settings-note"><summary>费用说明</summary><p>语音识别按录音时长计费。开启文字整理会额外按文字用量计费。以上为参考价格，实际费用由你的百炼账户结算。</p></details>
+    <details className="settings-caption settings-note"><summary>自动填入与费用说明</summary>
+      <p>自动填入使用临时剪贴板粘贴，完成后恢复原剪贴板，期间新复制的内容会保留。输入位置变化时会保留文字供复制；提示未确认时，请检查输入框。</p>
+      <p>语音识别按录音时长计费，文字整理另按文字用量计费。所示价格仅供参考，实际费用以百炼账单为准。</p>
+    </details>
     </section>
     {status && !status.holdAvailable && <p className="settings-feedback error" role="alert">语音输入暂不可用，请重新打开 Earshot 后再试。</p>}
     {(message || status?.error) && <p className={`settings-feedback${status?.error || (message && message !== '已保存' && !recordingKey) ? ' error' : ''}`} role="status">{message || status?.error}</p>}
