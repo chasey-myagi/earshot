@@ -1,3 +1,4 @@
+import { ActionButton } from './ActionButton';
 import { useEffect, useRef, useState } from 'react';
 import type { UsagePeriod, UsageSummary } from '../shared/usage';
 import './provider-settings.css';
@@ -50,6 +51,6 @@ export function UsageSettings({ load, openBilling }: { load: (period: UsagePerio
         </details>
       </> : !error ? <p className="settings-caption">正在读取本机用量…</p> : null}
     </div>
-    <div className="usage-footer"><p className="settings-caption">仅统计这台 Mac，实际费用以百炼账单为准。</p><button type="button" className="field-link" onClick={openBilling}>查看百炼账单</button></div>
+    <div className="usage-footer"><p className="settings-caption">仅统计这台 Mac，实际费用以百炼账单为准。</p><ActionButton className="field-link" action={async () => { await openBilling(); }} failure="未能打开百炼账单，请重试">查看百炼账单</ActionButton></div>
   </section>;
 }

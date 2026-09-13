@@ -2,6 +2,7 @@ import { memo, useMemo, useRef, useState } from "react";
 import type { TranscriptTurn } from "../shared/types";
 import { formatClock } from "./format";
 import { TranscriptEditor } from "./TranscriptEditor";
+import { EditIcon } from "./icons";
 
 type TurnsProps = {
   turns: TranscriptTurn[];
@@ -55,13 +56,13 @@ const TurnRow = memo(function TurnRow({ turn, sessionId, editable, glance, activ
               title="修改这位说话人的整组发言名称"
               onClick={(event) => onRename?.(turn.speaker || name, event.currentTarget)}
             >
-              {name}<span className="name-edit-cue" aria-hidden="true">整组改名</span>
+              {name}<span className="name-edit-cue" aria-hidden="true">⌄</span>
             </button>
           ) : (
             <span className={`t-name ${turn.track}`}>{name}</span>
           )}
           {canEdit && <button ref={editButton} type="button" className="turn-edit-button" aria-expanded={editing}
-            aria-label={`修改 ${formatClock(turn.tStartMs / 1000)} 这一段`} onClick={() => setEditing(value => !value)}>{turn.correction?.edited ? "已修改 · 编辑" : "修改这一段"}</button>}
+            title="编辑这一段" aria-label={`修改 ${formatClock(turn.tStartMs / 1000)} 这一段`} onClick={() => setEditing(value => !value)}>{turn.correction?.edited && <span>已修改</span>}<EditIcon /></button>}
         </div>
         <p className="t-text">{turn.text || "\u00a0"}</p>
         {editing && canEdit && <TranscriptEditor key={`${sessionId}:${turn.id}`} sessionId={sessionId} turn={turn}

@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import type { ActionResult, AppSnapshot, SessionSummary } from '../shared/types';
 import { formatDurationShort, formatListWhen, formatStartTime } from './format';
 import { sessionSideHint } from './sessionSide';
 import { NameEditor } from './NameEditor';
+import { sessionRemoval } from './session-removal';
+import { usePresence } from './usePresence';
 import { AnimatedSessionTitle } from './AnimatedSessionTitle';
 
 export function SessionRow({ row, selected, active = selected, onSelect, titleOnly = false, onContextSelect, deleteTargets = [row.id], deletionBlocked = false, interactionDisabled = false, onDelete }: {
@@ -15,6 +17,10 @@ export function SessionRow({ row, selected, active = selected, onSelect, titleOn
   const [point, setPoint] = useState<{ left: number; top: number } | null>(null);
   const [editing, setEditing] = useState(false), [draft, setDraft] = useState(row.title);
   const [error, setError] = useState<string | null>(null), [busy, setBusy] = useState(false);
+  const removing = useSyncExternalStore(sessionRemoval.subscribe, () => sessionRemoval.isPending(row.id), () => false);
+  const presence = usePresence(Boolean(point));
+  const lastPoint = useRef(point);
+  if (point) lastPoint.current = point;
   const pending = useRef(false), trigger = useRef<HTMLButtonElement>(null), menu = useRef<HTMLDivElement>(null);
   const attempt = useRef(0), currentId = useRef(row.id);
   const menuTargets = useRef(deleteTargets);
@@ -26,11 +32,11 @@ export function SessionRow({ row, selected, active = selected, onSelect, titleOn
   const typeLabel = row.kind === 'dictation' ? '语音输入' : '语音录制';
   function close(focus = false) { setPoint(null); if (focus) trigger.current?.focus(); }
   function rename() {
-    if (recording || busy || interactionDisabled) return;
+    if (recording || busy || removing || interactionDisabled) return;
     close(); onSelect(row.id); setError(null); setDraft(row.title); setEditing(true);
   }
   function open(position?: { left: number; top: number }) {
-    if (interactionDisabled || !trigger.current) return;
+    if (interactionDisabled || removing || !trigger.current) return;
     menuTargets.current = [...deleteTargets]; onContextSelect?.();
     const rect = trigger.current.getBoundingClientRect();
     setPoint({ left: Math.max(8, Math.min(position?.left ?? rect.left, innerWidth - 208)), top: Math.max(8, Math.min(position?.top ?? rect.bottom + 4, innerHeight - 56)) });
@@ -55,7 +61,7 @@ export function SessionRow({ row, selected, active = selected, onSelect, titleOn
     close(action !== 'rename'); pending.current = true; setBusy(true); setError(null);
     try {
       const result = action === 'delete'
-        ? onDelete ? await onDelete(menuTargets.current) : await window.earshot.deleteSession(row.id)
+        ? onDelete ? await onDelete(menuTargets.current) : await sessionRemoval.remove(row.id)
         : await window.earshot.renameSession({ sessionId: row.id, title: draft.trim() });
       if (attempt.current !== request || currentId.current !== sessionId) return;
       if (!result.ok && !(action === 'delete' && onDelete)) setError(result.error);
@@ -75,10 +81,10 @@ export function SessionRow({ row, selected, active = selected, onSelect, titleOn
       <span className="sl-title" title={row.title}><AnimatedSessionTitle value={row} /></span>
       <span className="sl-meta">{formatListWhen(row.startedAt)} {formatStartTime(row.startedAt)} · {formatDurationShort(row.durationSec)}{hint ? ` · ${hint}` : ''}</span>
     </button>}
-    {titleOnly && !editing && <button ref={trigger} type="button" className="session-title-menu" aria-label={`操作会话：${row.title}`} aria-haspopup="menu" aria-expanded={Boolean(point)} disabled={busy}
+    {titleOnly && !editing && <button ref={trigger} type="button" className="session-title-menu" aria-label={`操作会话：${row.title}`} aria-haspopup="menu" aria-expanded={Boolean(point)} disabled={busy || removing}
       onClick={() => point ? close() : open()} onKeyDown={event => { if (['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); open(); } if (event.key === 'F2') { event.preventDefault(); rename(); } }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg></button>}
     {error && !editing && <p className="field-err" role="alert">{error}</p>}
-    {point && createPortal(<div ref={menu} tabIndex={-1} className="session-menu" role="menu" aria-label="会话操作" style={point} onKeyDown={event => {
+    {presence.present && createPortal(<div ref={menu} tabIndex={-1} className={`session-menu t-dropdown ${presence.className}`} inert={!point} aria-hidden={!point} role="menu" aria-label="会话操作" style={lastPoint.current ?? undefined} onKeyDown={event => {
       event.stopPropagation();
       if (event.key === 'Escape' || event.key === 'Tab') { if (event.key === 'Escape') event.preventDefault(); close(true); }
       if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
@@ -87,7 +93,7 @@ export function SessionRow({ row, selected, active = selected, onSelect, titleOn
       const index = items.indexOf(document.activeElement as HTMLButtonElement);
       items[event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
     }}>
-      <button type="button" role="menuitem" className="danger" disabled={recording || deletionBlocked} title={recording || deletionBlocked ? '请先停止录制并保存' : undefined} onClick={() => void act('delete')}>{menuTargets.current.length > 1 ? `删除 ${menuTargets.current.length} 个会话` : '删除'}</button>
+      <button type="button" role="menuitem" className="danger" disabled={recording || deletionBlocked || removing} title={recording ? '请先停止录制并保存' : deletionBlocked || removing ? '正在删除，请稍候' : undefined} onClick={() => void act('delete')}>{menuTargets.current.length > 1 ? `删除 ${menuTargets.current.length} 个会话` : '删除'}</button>
     </div>, document.body)}
   </div>;
 }
@@ -95,19 +101,22 @@ export function SessionRow({ row, selected, active = selected, onSelect, titleOn
 export function DeletionNotices({ values }: { values: NonNullable<AppSnapshot['deletions']> }) {
   const [error, setError] = useState<string | null>(null), [busy, setBusy] = useState(false);
   const pending = useRef(false);
-  useEffect(() => { if (!values.length) setError(null); }, [values.length]);
-  if (!values.length) return null;
+  const visible = Boolean(values.length || busy || error);
+  const presence = usePresence(visible, "--toast-close");
+  const lastMessage = useRef('');
   const failed = values.some(value => value.error);
-  return <div className="name-undo deletion-notice">
-    <p role="status">{failed ? '部分会话未能移到废纸篓，仍保留在本机。' : values.length === 1 ? `已删除「${values[0].title}」` : `已删除 ${values.length} 个会话`}{error ? ` · ${error}` : ''}</p>
-    <button type="button" className="btn ghost" disabled={busy} onClick={async () => {
+  if (visible) lastMessage.current = `${failed ? '部分会话未能移到废纸篓，仍保留在本机。' : busy ? '正在恢复会话…' : !values.length ? '恢复未完成' : values.length === 1 ? `已删除「${values[0].title}」` : `已删除 ${values.length} 场会话`}${error ? ` · ${error}` : ''}`;
+  if (!presence.present) return null;
+  return <div className={`name-undo deletion-notice t-toast ${presence.className}`} inert={!visible} aria-hidden={!visible}>
+    <p role="status">{lastMessage.current}</p>
+    {values.length > 0 && <button type="button" className="btn ghost" disabled={busy} onClick={async () => {
       if (pending.current) return; pending.current = true; setBusy(true); setError(null);
       const targets = values.map(value => value.sessionId);
       try {
         const results = await Promise.all(targets.map(id => window.earshot.undoDeleteSession(id).catch(() => ({ ok: false as const, error: '恢复未完成，请重试' }))));
         const failures = results.filter(result => !result.ok);
-        if (failures.length) setError(`${failures.length} 个会话未恢复，请重试或检查废纸篓`);
+        if (failures.length) setError(`${failures.length === 1 ? '会话' : `${failures.length} 场会话`}未恢复，请检查废纸篓或重试。`);
       } finally { pending.current = false; setBusy(false); }
-    }}>{busy ? '恢复中…' : failed ? '恢复会话' : '撤销'}</button>
+    }}>{busy ? '恢复中…' : failed ? '恢复会话' : '撤销'}</button>}{error && <button type="button" className="btn text" onClick={() => setError(null)}>关闭提示</button>}
   </div>;
 }

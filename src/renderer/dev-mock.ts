@@ -8,6 +8,7 @@ import type {
   SessionSummary,
   TranscriptTurn,
 } from "../shared/types";
+import { DEFAULT_SHORTCUTS, type DictationState } from '../shared/dictation';
 import { normalizeHotwords, type HotwordStatus } from "../shared/hotwords";
 import type { CorrectTurnInput, TurnCorrectionInput, TranscriptSearchHit } from "../shared/transcript-tools";
 
@@ -19,7 +20,11 @@ import type { CorrectTurnInput, TurnCorrectionInput, TranscriptSearchHit } from 
 export function installDevMock(): void {
   if (!import.meta.env.DEV || typeof window.earshot !== "undefined") return;
 
+  document.documentElement.dataset.previewTheme = new URLSearchParams(location.search).get('theme') ?? '';
   const scenario = new URLSearchParams(location.search).get("mock") ?? "ready";
+  const fault = new URLSearchParams(location.search).get('fault');
+  const faulted = new Set<string>();
+  const failOnce = (name: string) => { if (fault !== name || faulted.has(name)) return false; faulted.add(name); return true; };
   const voiceStatus = new URLSearchParams(location.search).get("voice");
   const voiceStates = ["pending", "running", "remembered", "insufficient", "conflicting", "unavailable", "stale"] as const;
   const registrationStatus = voiceStates.find(status => status === voiceStatus);
@@ -118,6 +123,7 @@ export function installDevMock(): void {
     hasApiKey: !(scenario === "first" || scenario === "nokey"),
     autoDiarize: true,
     autoTitle: false,
+    shortcuts: { prefs: DEFAULT_SHORTCUTS, accessibility: true, holdAvailable: true },
     permissions:
       scenario === "first"
         ? { microphone: "undetermined", screen: "undetermined" }
@@ -365,6 +371,7 @@ export function installDevMock(): void {
       emit();
     },
     setAutoDiarize: async (on: boolean) => {
+      if (failOnce('settings')) throw new Error('Preview save failure');
       state.autoDiarize = on;
       emit();
     },
@@ -373,7 +380,7 @@ export function installDevMock(): void {
     renameSession: async ({sessionId,title}) => {
       const target = state.sessions.find(row => row.id === sessionId);
       const name = title.trim();
-      if(!target || !name || Array.from(name).length > 80) return {ok:false,error:"名称不能为空，且最多 80 个字符"};
+      if(!target || !name || Array.from(name).length > 160) return {ok:false,error:"名称不能为空，且最多 160 个字符"};
       target.title=name;
       const preview = detailFor(sessionId); if (preview) preview.title = name;
       if (weekly.id === sessionId) weekly.title = name;
@@ -456,13 +463,38 @@ export function installDevMock(): void {
       emit();
       return ok;
     },
-    dictationSnapshot: async () => ({phase:'idle',text:'',message:'',startedAt:null,level:0,retryable:false}),
+    dictationSnapshot: async (): Promise<DictationState> => {
+      const hud = new URLSearchParams(location.search).get('hud');
+      if (hud === 'listening') return { phase:'listening',text:'',message:'正在听',startedAt:Date.now() - 52000,level:.6,retryable:false };
+      if (hud === 'transcribing') return { phase:'transcribing',text:'',message:'正在转写…',startedAt:Date.now(),level:0,retryable:false };
+      if (hud === 'result') return { phase:'result',text:dictationFixture.dictation!.text,message:'文字已保留',resultKind:'preview',startedAt:Date.now(),level:0,retryable:false };
+      return {phase:'idle',text:'',message:'',startedAt:null,level:0,retryable:false};
+    },
     onDictation: () => () => {}, beginDictation: async () => ({ok:true}), endDictation: async () => {}, cancelDictation: async () => {},
     retryDictation: async () => ({ok:true}), insertDictation: async () => ({ok:true}), copyDictation: async () => ({ok:true}),
     setShortcutCapture: async () => ({ok:true}),
-    saveShortcuts: async () => ({ok:false,error:'请在 Earshot 应用中设置系统快捷键'}), requestAccessibility: async () => {},
-    deleteSession: async () => ({ ok: false, error: "请在 Earshot 应用中管理真实会话" }),
-    undoDeleteSession: async () => ({ ok: false, error: "没有待撤销的删除" }),
+    saveShortcuts: async prefs => { state.shortcuts = { ...state.shortcuts!, prefs }; emit(); return ok; }, requestAccessibility: async () => {},
+    // In-memory preview only. The production preload always wins above.
+    deleteSession: async id => {
+      await new Promise(resolve => setTimeout(resolve, 350));
+      if (failOnce('delete')) return { ok: false, error: '会话仍保留在本机，请重试' };
+      const row = state.sessions.find(row => row.id === id);
+      if (!row || row.status === 'recording') return { ok:false,error:'这场会话暂时无法删除' };
+      state.sessions = state.sessions.filter(row => row.id !== id);
+      state.deletions = [...(state.deletions ?? []), {sessionId:id,title:row.title,expiresAt:Date.now()+10000}];
+      if (state.selectedId === id) { state.selectedId = null; state.selected = null; }
+      if (state.playback?.sessionId === id) { state.playback = null; state.playingSessionId = null; }
+      emit(); return ok;
+    },
+    undoDeleteSession: async id => {
+      const row = previewDetails.get(id);
+      state.deletions = state.deletions?.filter(value => value.sessionId !== id); emit();
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (failOnce('undo')) return { ok:false,error:'恢复未完成' };
+      if (!row) return { ok:false,error:'没有待撤销的删除' };
+      if (!state.sessions.some(value => value.id === id)) state.sessions = [summaryOf(row), ...state.sessions];
+      select(id); emit(); return ok;
+    },
     revealSession: async () => previewOnly("打开本机录音目录"),
     revealExport: async () => previewOnly("显示导出文件"),
     exportTranscript: async () => ({ ok: false, error: "请在 Earshot 应用中导出" }),

@@ -33,3 +33,9 @@ The sherpa-onnx runtime is Apache-2.0; see [upstream v1.13.6](https://github.com
 ## Project artwork
 
 The Earshot icon in assets/ is a generated project asset selected for this application. It is included under the project MIT license. No third-party brand identity or endorsement is claimed.
+
+## Interaction recipes
+
+`src/renderer/motion.css` includes the portable Menu dropdown, Icon swap, and Toast CSS recipes from [Transitions.dev](https://github.com/Jakubantalik/transitions.dev/tree/main/skills/transitions-dev), by Jakub Antalik, retrieved 2026-09-14. Selectors, timing defaults, and reduced-motion guards are preserved as supplied for reuse by the upstream skill.
+
+The compact loading signal and quiet control surfaces also draw visual inspiration from [Libraries.dev Thinking Orbs](https://libraries.dev/orbs). Earshot's signal is its own CSS/SVG implementation; no Libraries.dev package, asset, or runtime code is bundled.

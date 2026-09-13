@@ -56,3 +56,15 @@ export function CloseIcon() {
     </svg>
   );
 }
+
+export function SearchIcon() {
+  return <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
+    <circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" />
+  </svg>;
+}
+
+export function EditIcon() {
+  return <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="m12 4 4 4M4 12l9-9 4 4-9 9-5 1 1-5Z" />
+  </svg>;
+}

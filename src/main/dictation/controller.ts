@@ -66,11 +66,11 @@ export function createDictationController(opts: {
     if (closing === drain) closing = null;
   }
 
-  async function recognize(): Promise<void> {
+  async function recognize(atLimit = false): Promise<void> {
     const token = generation;
     if (!stream) abort = new AbortController();
     const signal = abort!.signal;
-    publish({ phase: 'transcribing', level: 0, message: '正在转成文字…', retryable: false });
+    publish({ phase: 'transcribing', level: 0, message: atLimit ? `已达 ${Math.ceil((opts.maxMs ?? 60000) / 1000)} 秒上限，正在转写…` : '正在转成文字…', retryable: false });
     const pcm = Buffer.concat(chunks, length);
     try {
       let text = (await (stream ? stream.finish() : opts.transcribe(pcm, signal))).trim();
@@ -140,7 +140,7 @@ export function createDictationController(opts: {
     return { ok: true };
   }
 
-  async function end(): Promise<void> {
+  async function end(atLimit = false): Promise<void> {
     if (state.phase === 'preparing' || (beginning && state.phase === 'idle')) { await cancel(); return; }
     if (state.phase !== 'listening') return;
     clearTimeout(timer);
@@ -150,7 +150,7 @@ export function createDictationController(opts: {
     catch { if (generation === token) { eraseAudio(); releaseTarget(); fail('麦克风没有正常停止，请重新尝试'); } return; }
     if (generation !== token) return;
     if (length < 16000 * 2 * .2) { abort?.abort(); stream = null; eraseAudio(); releaseTarget(); fail('按住快捷键说完一句话，再松开'); return; }
-    await recognize();
+    await recognize(atLimit);
   }
 
   async function begin(): Promise<ActionResult> {
@@ -177,19 +177,19 @@ export function createDictationController(opts: {
           if (generation !== token || !['preparing', 'listening'].includes(state.phase)) return;
           const remaining = Math.max(0, maxBytes - length);
           const copy = Buffer.from(bytes.subarray(0, remaining - remaining % 2));
-          if (!copy.length) { if (state.phase === 'listening') void end(); return; }
+          if (!copy.length) { if (state.phase === 'listening') void end(true); return; }
           chunks.push(copy); length += copy.length;
           stream?.send(copy);
           let energy = 0;
           for (let i = 0; i < copy.length; i += 2) energy += (copy.readInt16LE(i) / 32768) ** 2;
           if (Date.now() - lastLevelAt >= 50) { lastLevelAt = Date.now(); publish({ level: Math.min(1, Math.sqrt(energy / (copy.length / 2)) * 5) }); }
-          if (length >= maxBytes && state.phase === 'listening') void end();
+          if (length >= maxBytes && state.phase === 'listening') void end(true);
         } });
         if (generation !== token) { await captured.stop(); return; }
         capture = captured;
         publish({ phase: 'listening', startedAt: Date.now(), message: '正在聆听' });
-        timer = setTimeout(() => { void end(); }, opts.maxMs ?? 60000);
-        if (length >= maxBytes) void end();
+        timer = setTimeout(() => { void end(true); }, opts.maxMs ?? 60000);
+        if (length >= maxBytes) void end(true);
       } catch {
         if (generation === token) { abort?.abort(); stream = null; eraseAudio(); releaseTarget(); fail('无法打开麦克风，请检查麦克风权限'); }
       }

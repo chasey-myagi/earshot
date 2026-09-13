@@ -14,7 +14,8 @@ export function HotwordSettings({ load, save, sync, subscribe }: {
   const [error, setError] = useState<string | null>(null);
   const loadRef = useRef(load); loadRef.current = load;
   const form = useRef({ draft: '', saved: '' });
-  const request = useRef(0);
+  const request = useRef(0), applying = useRef(false);
+  const [retryLoad, setRetryLoad] = useState(0);
   const mounted = useRef(false);
   function accept(value: HotwordStatus, replaceDraft = false) {
     const dirty = form.current.draft !== form.current.saved;
@@ -26,37 +27,38 @@ export function HotwordSettings({ load, save, sync, subscribe }: {
     mounted.current = true;
     function refresh() {
       const ticket = ++request.current;
-      void loadRef.current().then(value => { if (mounted.current && ticket === request.current) accept(value); }, () => {
-        if (mounted.current && ticket === request.current) setError('热词未能读取，请重新打开设置');
+      void loadRef.current().then(value => { if (mounted.current && ticket === request.current) { accept(value); setError(null); } }, () => {
+        if (mounted.current && ticket === request.current) setError('热词未能读取，请重试');
       });
     }
     refresh();
     const unsubscribe = subscribe?.(refresh);
     return () => { mounted.current = false; request.current += 1; unsubscribe?.(); };
-  }, [subscribe]);
+  }, [subscribe, retryLoad]);
   let count = 0, validation: string | null = null;
   try { count = normalizeHotwords(draft).length; } catch (err) { validation = err instanceof Error ? err.message : '热词内容无效'; }
   const dirty = status && draft !== status.words.join('\n');
   async function apply(retry = false) {
-    if (busy) return; setBusy(true); setError(null); request.current += 1;
+    if (applying.current) return; applying.current = true; setBusy(true); setError(null); request.current += 1;
     try {
       const value = await (retry ? sync() : save(draft));
       if (mounted.current) { request.current += 1; accept(value, !retry); }
-    } catch { setError('热词未能保存，请重试'); }
-    finally { setBusy(false); }
+    } catch { if (mounted.current) setError(retry ? '同步未完成，热词仍保留在本机。请重试。' : '热词未能保存，请重试'); }
+    finally { applying.current = false; if (mounted.current) setBusy(false); }
   }
   return <section className="settings-section" aria-labelledby="hotwords-heading">
     <h3 id="hotwords-heading">个人热词</h3>
     <div className="set-card provider-settings-body">
       <label htmlFor="personal-hotwords">人名、公司名与专业术语</label>
       <p className="why" id="hotwords-help">每行一个，最多 {HOTWORD_LIMIT} 个。热词会发送到百炼，用于后续转写。</p>
-      <textarea id="personal-hotwords" aria-describedby="hotwords-help hotwords-validation" rows={4} maxLength={30000}
+      <textarea aria-invalid={Boolean(validation)} id="personal-hotwords" aria-describedby="hotwords-help hotwords-validation" rows={4} maxLength={30000}
         placeholder={'例如：\n林晓\n向日葵工作室\n声纹识别'} value={draft} disabled={!status || busy} onChange={event => { form.current.draft = event.target.value; setDraft(event.target.value); }} />
       <div className="provider-settings-actions">
         <span className="settings-caption">{validation ?? `${count} / ${HOTWORD_LIMIT} 个`}</span>
         <button type="button" className="btn ghost" disabled={!status || !dirty || busy || Boolean(validation)} onClick={() => void apply()}>{busy ? '保存中…' : '保存热词'}</button>
       </div>
       <p id="hotwords-validation" className="field-err" role={validation || error ? 'alert' : undefined}>{validation ?? error}</p>
+      {!status && error && <button type="button" className="btn ghost" onClick={() => { setError(null); setRetryLoad(value => value + 1); }}>重新读取热词</button>}
       {status && (status.words.length > 0 || status.updatedAt !== null || status.message) ? <>
         <div className="hotword-status" role="status">{status.message ?? (status.sync === 'empty' ? '已停用' : status.sync === 'ready' ? '已保存' : '已保存，部分模型待同步')}
           {status.words.length > 0 && status.sync !== 'ready' ? <button type="button" className="field-link" disabled={busy || Boolean(dirty)} onClick={() => void apply(true)}>重试同步</button> : null}

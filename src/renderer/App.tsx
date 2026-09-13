@@ -4,6 +4,7 @@ import { Glance } from "./Glance";
 import { Library } from "./Library";
 import { useGlanceSnapshot, useSnapshot } from "./useSnapshot";
 import { createMediaPlayback } from "./media-playback";
+import { ActivitySignal } from "./ActivitySignal";
 
 function useGlanceRoute(): boolean {
   const [glance, setGlance] = useState(() => location.hash === "#glance");
@@ -15,11 +16,12 @@ function useGlanceRoute(): boolean {
   return glance;
 }
 
-function Boot({ label }: { label?: string }) {
+function Boot({ label = "正在打开会话…", retry }: { label?: string; retry?: () => void }) {
   return (
     <div className="boot">
-      <span className="boot-dot" aria-hidden />
-      {label ? <span>{label}</span> : null}
+      {!retry && <ActivitySignal />}
+      <span className="boot-message" role="status">{label}</span>
+      {retry && <button type="button" className="btn ghost" onClick={retry}>重试</button>}
     </div>
   );
 }
@@ -46,9 +48,9 @@ function LibraryApp() {
       void window.earshot.playbackHost(false);
     };
   }, []);
-  const { snap, refresh } = useSnapshot();
-  if (!snap) return <Boot />;
-  return <Library snap={snap} refresh={refresh} />;
+  const { snap, error, refresh } = useSnapshot();
+  if (!snap) return <Boot label={error ?? undefined} retry={error ? () => void refresh() : undefined} />;
+  return <Library snap={snap} refresh={refresh} syncError={error} />;
 }
 
 function GlanceApp() {

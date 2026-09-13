@@ -20,17 +20,24 @@ function hydrate(raw: AppSnapshot): AppSnapshot {
 }
 
 export function useSnapshot() {
-  const [snap, setSnap] = useState<AppSnapshot | null>(null);
+  const [state, setState] = useState<{ snap: AppSnapshot | null; error: string | null }>({ snap: null, error: null });
   const pendingRef = useRef(false);
+  const request = useRef(0), active = useRef(false);
 
   const refresh = useCallback(async () => {
     if (typeof window.earshot === "undefined") return;
-    const next = hydrate(await window.earshot.snapshot());
-    setSnap(previous => shareSnapshotTurns(previous, next));
+    const ticket = ++request.current;
+    try {
+      const next = hydrate(await window.earshot.snapshot());
+      if (active.current && ticket === request.current) setState(previous => ({ snap: shareSnapshotTurns(previous.snap, next), error: null }));
+    } catch {
+      if (active.current && ticket === request.current) setState(previous => ({ ...previous, error: '无法更新会话，请重试' }));
+    }
   }, []);
 
   useEffect(() => {
     if (typeof window.earshot === "undefined") return;
+    active.current = true;
     void refresh();
 
     const schedule = () => {
@@ -44,10 +51,10 @@ export function useSnapshot() {
 
     const off = window.earshot.onChange(schedule);
     window.addEventListener('focus', schedule);
-    return () => { off(); window.removeEventListener('focus', schedule); };
+    return () => { active.current = false; request.current++; off(); window.removeEventListener('focus', schedule); };
   }, [refresh]);
 
-  return { snap, refresh };
+  return { ...state, refresh };
 }
 
 /** Glance 窗口：合并广播 + 只在 recording 实质变化时更新 */

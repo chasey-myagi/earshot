@@ -83,7 +83,7 @@ export function TranscriptView({ detail, positions, connection, capturePhase, on
             ? "正在重新连接，录音继续" : "正在等待第一段转写"}</p></div>
         : <Turns turns={detail.turns} sessionId={detail.id} editable={editable} startedAt={detail.startedAt} variant="library" onRename={onRename} onSeek={onSeek} playbackPositionMs={playbackPositionMs} />}
     </div>
-    {!following && detail.turns.length > 0 ? <button type="button" className="btn latest"
+    {!following && detail.status === "recording" && detail.turns.length > 0 ? <button type="button" className="btn latest"
       onClick={() => {
         const el = element.current;
         if (!el) return;

@@ -1,3 +1,4 @@
+import { ActionButton } from './ActionButton';
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RecordingLive } from "../shared/types";
 import { CloseIcon } from "./icons";
@@ -50,15 +51,15 @@ export function Glance({ recording }: GlanceProps) {
   return (
     <div className="glance">
       <header className="glance-bar">
-        <button
+        <ActionButton
           type="button"
           className="glance-close"
           title={recording?.phase === "finalize_failed" ? "隐藏浮窗，稍后可打开 Earshot 重试保存" : "隐藏浮窗，录音继续"}
           aria-label="隐藏浮窗"
-          onClick={() => void window.earshot.hideGlance().catch(() => undefined)}
+          action={window.earshot.hideGlance} failure="未能隐藏浮窗，请重试"
         >
           <CloseIcon />
-        </button>
+        </ActionButton>
         <RecordingClock recording={recording} />
         <div className="grow" />
         <StopRecording recording={recording} />
@@ -68,9 +69,7 @@ export function Glance({ recording }: GlanceProps) {
       </div>
       <footer className="glance-foot">
         {recording ? <RealtimeNotice recording={recording} compact /> : null}
-        <button type="button" className="btn text" onClick={() => void window.earshot.showLibrary()}>
-          查看完整文字
-        </button>
+        <ActionButton className="btn text" action={window.earshot.showLibrary} failure="未能打开会话，请重试">查看完整文字</ActionButton>
       </footer>
     </div>
   );

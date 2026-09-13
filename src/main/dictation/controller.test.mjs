@@ -23,6 +23,7 @@ test('hold starts microphone once, release stops before recognition, inserts onc
   h.pcm(); await Promise.all([h.controller.end(),h.controller.end()]);
   assert.equal(h.stops(),1); assert.equal(h.submissions.length,1); assert.deepEqual(h.inserts,['你好。']); assert.equal(h.released(),1);
   assert.equal(h.controller.snapshot().phase,'success');
+  assert.equal(h.states.some(state => state.message.includes('上限')), false);
 });
 
 test('immediate release or cancellation during delayed microphone startup cannot leave a recording behind', async t => {
@@ -77,6 +78,7 @@ test('meeting or microphone preflight failure never captures; empty/short audio 
 test('maximum utterance duration releases the microphone and submits once', async t => {
   const h=fixture(t,{maxMs:250});await h.controller.begin();h.pcm();await tick();
   assert.equal(h.stops(),1);assert.equal(h.submissions.length,1);assert.equal(h.submissions[0].length,8000);assert.equal(h.inserts.length,1);
+  assert.ok(h.states.some(state => state.phase === 'transcribing' && state.message.includes('已达 1 秒上限')));
 });
 
 test('stream receives audio before release, completed history precedes insertion and cancellation blocks late polish', async t => {

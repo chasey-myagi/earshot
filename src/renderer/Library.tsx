@@ -1,3 +1,4 @@
+import { ActionButton } from './ActionButton';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   ActionResult,
@@ -30,6 +31,7 @@ import { TranscriptEditor } from "./TranscriptEditor";
 import { HotwordSettings } from "./HotwordSettings";
 import { UsageSettings } from "./UsageSettings";
 import { AutoTitleSetting } from "./AutoTitleSetting";
+import { SettingSwitch } from "./SettingSwitch";
 import type { TranscriptSearchHit } from "../shared/transcript-tools";
 
 type ExportNotice = { text: string; saved?: { id: string; path: string } };
@@ -73,9 +75,10 @@ function startError(result: ActionResult): string {
 type LibraryProps = {
   snap: AppSnapshot;
   refresh: () => Promise<void>;
+  syncError?: string | null;
 };
 
-export function Library({ snap, refresh }: LibraryProps) {
+export function Library({ snap, refresh, syncError }: LibraryProps) {
   const first = snap.sessions.length === 0;
   const [pane, setPane] = useState<RightPane>("session");
   const [listNavigation, setListNavigation] = useState<{ id: string | null } | null>(null);
@@ -114,7 +117,7 @@ export function Library({ snap, refresh }: LibraryProps) {
   const [focusTurn, setFocusTurn] = useState<{ sessionId: string; turnId: string; request: number } | null>(null);
   const searchRefreshKey = JSON.stringify([snap.sessions, snap.selected?.turns.map(turn => [turn.id, turn.correction?.revision]), snap.selected?.transcriptToolsError]);
   function openPane(next: RightPane) { navigationRequest.current += 1; setPendingSearch(null); setFocusTurn(null); setPane(next); }
-  function selectFromList(id: string) { openPane("session"); void window.earshot.selectSession(id); }
+  function selectFromList(id: string) { openPane("session"); const request = navigationRequest.current; void window.earshot.selectSession(id).catch(() => { if (request === navigationRequest.current) setActionError("无法打开会话，请重试"); }); }
   function openSession(id: string) { setListNavigation({ id }); selectFromList(id); }
   async function searchSelect(hit: TranscriptSearchHit) {
     const request = ++navigationRequest.current;
@@ -243,7 +246,7 @@ export function Library({ snap, refresh }: LibraryProps) {
       const result = await window.earshot.start();
       if (!result.ok) setActionError(startError(result));
     } catch (err) {
-      if (err instanceof Error && err.message) setActionError(err.message);
+      setActionError(err instanceof Error && err.message ? err.message : "操作未完成，请重试");
     } finally {
       starting.current = false;
       setStartBusy(false);
@@ -260,6 +263,8 @@ export function Library({ snap, refresh }: LibraryProps) {
       // 屏幕录制走系统级申请（CGRequestScreenCaptureAccess），不用 getDisplayMedia：
       // 后者在 macOS 上会弹「共享屏幕」选择器，且成功也不代表拿到了 TCC 授权
       await window.earshot.requestScreen();
+    } catch {
+      setActionError("未能打开权限申请，请在系统设置中允许 Earshot 后重试");
     } finally {
       setAsking(null);
       await refresh();
@@ -311,7 +316,7 @@ export function Library({ snap, refresh }: LibraryProps) {
             onClick={() => openSession(snap.recording!.sessionId)}>
             返回当前录制
           </button> : null}
-          <button type="button" className="btn ghost" onClick={() => void window.earshot.showGlance()}>浮窗</button>
+          <ActionButton className="btn ghost" action={window.earshot.showGlance} failure="未能打开浮窗，请重试">浮窗</ActionButton>
           <StopRecording recording={snap.recording} />
         </> : first ? (
           <button
@@ -348,7 +353,9 @@ export function Library({ snap, refresh }: LibraryProps) {
         {snap.audioImport.percent !== undefined && <progress aria-label="录音导入进度" max={100} value={snap.audioImport.percent} />}
         <button type="button" className="btn text" onClick={() => void window.earshot.cancelAudioImport().catch(() => setActionError("取消导入未完成，请重试"))}>取消导入</button>
       </div> : null}
+      {syncError && <div className="app-feedback" role="alert">{syncError}<button type="button" className="btn text" onClick={() => void refresh()}>重新加载</button></div>}
       {snap.recording ? <RealtimeNotice recording={snap.recording} /> : null}
+      {settingsOpen && actionError ? <div className="app-feedback" role="alert">{actionError}<button type="button" className="btn text" onClick={() => setActionError(null)}>关闭提示</button></div> : null}
       <div className={`body${first ? " solo" : ""}`}>
         {first ? null : (
           <SessionList
@@ -418,7 +425,7 @@ export function Library({ snap, refresh }: LibraryProps) {
                 const result = await window.earshot.playSession(id);
                 if (!result.ok) setActionError(result.error);
               } catch (err) {
-                if (err instanceof Error && err.message) setActionError(err.message);
+                setActionError(err instanceof Error && err.message ? err.message : "操作未完成，请重试");
               }
             }}
             onPause={async () => {
@@ -427,7 +434,7 @@ export function Library({ snap, refresh }: LibraryProps) {
                 const result = await window.earshot.pausePlayback(selected!.id);
                 if (!result.ok) setActionError(result.error);
               } catch (err) {
-                if (err instanceof Error && err.message) setActionError(err.message);
+                setActionError(err instanceof Error && err.message ? err.message : "操作未完成，请重试");
               }
             }}
             onSeek={async (positionMs) => {
@@ -510,9 +517,7 @@ function PermissionRight({
   if (state === "denied") {
     return (
       <div className="g-side">
-        <button type="button" className="btn ghost" onClick={() => void window.earshot.openPrivacy(pane)}>
-          打开系统设置
-        </button>
+        <ActionButton className="btn ghost" action={() => window.earshot.openPrivacy(pane)} failure="未能打开系统设置，请重试">打开系统设置</ActionButton>
       </div>
     );
   }
@@ -522,9 +527,7 @@ function PermissionRight({
         <button type="button" className="btn ghost" onClick={onAllow}>
           允许
         </button>
-        <button type="button" className="btn ghost" onClick={() => void window.earshot.openPrivacy(pane)}>
-          打开系统设置
-        </button>
+        <ActionButton className="btn ghost" action={() => window.earshot.openPrivacy(pane)} failure="未能打开系统设置，请重试">打开系统设置</ActionButton>
       </div>
     );
   }
@@ -556,12 +559,13 @@ function KeyField({
     <div className="field">
       <div className="field-head">
         <label htmlFor="api-key">百炼 API 密钥</label>
-        <button type="button" className="field-link" onClick={() => void window.earshot.openKeyPage()}>
-          打开百炼控制台
-        </button>
+        <ActionButton className="field-link" action={window.earshot.openKeyPage} failure="未能打开控制台，请重试">打开百炼控制台</ActionButton>
       </div>
       <input
         id="api-key"
+        aria-invalid={Boolean(error)}
+        aria-describedby="key-save-status"
+        onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing && !busy && draft.trim().length >= 8) { event.preventDefault(); onSave(); } }}
         type="password"
         autoComplete="off"
         spellCheck={false}
@@ -571,7 +575,7 @@ function KeyField({
         disabled={busy}
       />
       <div className="field-save"><button type="button" className="btn ghost" disabled={busy || draft.trim().length < 8} onClick={onSave}>{busy ? '保存中…' : hasKey ? '更换密钥' : '保存密钥'}</button>
-      <span role="status">{saved ? '已保存，下次转写时验证连接' : hasKey ? '密钥已保存' : '填入密钥后即可使用云端转写'}</span></div>
+      <span id="key-save-status" role="status">{saved ? '已保存，下次转写时验证连接' : hasKey ? '密钥已保存' : '填入密钥后即可使用云端转写'}</span></div>
       {error ? <p className="field-err" role="alert">{error}</p> : null}
     </div>
   );
@@ -614,7 +618,8 @@ function PrepBoard({
       <div className="prep-mark" aria-hidden>
         <img src={appIcon} alt="" className="app-icon" />
       </div>
-      <h2>录下一场会</h2>
+      <h2>开始第一段录音</h2>
+      <p className="prep-intro">录下麦克风和系统声音，边说边转写。</p>
       <div className="board">
         <div className="grant">
           <div className="g-ico near">
@@ -697,18 +702,11 @@ function SettingsPane({
         <DictationSettings status={snap.shortcuts} />
         <HotwordSettings subscribe={window.earshot.onChange} load={window.earshot.hotwordStatus} save={window.earshot.saveHotwords} sync={window.earshot.syncHotwords} />
         <section className="settings-section" aria-labelledby="recording-heading"><h3 id="recording-heading">录制</h3>
-          <div className="set-card"><div className="set-row">
-            <div>自动区分说话人<p className="why">录音结束后，按声音区分说话人。</p></div>
-            <button type="button" className={`knob${snap.autoDiarize ? " on" : ""}`} role="switch" aria-checked={snap.autoDiarize}
-              aria-label="自动区分说话人" onClick={() => void window.earshot.setAutoDiarize(!snap.autoDiarize)} />
-          </div>
-          <div className="set-row">
-            <div>共用麦克风<p className="why">多人使用同一支麦克风时开启。配合自动区分，可识别现场不同的说话人。</p></div>
-            <button type="button" className={`knob${snap.sharedMicrophone ? " on" : ""}`} role="switch" aria-checked={Boolean(snap.sharedMicrophone)}
-              aria-label="共用麦克风" onClick={() => void window.earshot.setSharedMicrophone(!snap.sharedMicrophone)} />
-          </div>
+          <div className="set-card">
+          <SettingSwitch label="自动区分说话人" description="录音结束后，按声音区分说话人。" enabled={snap.autoDiarize} save={window.earshot.setAutoDiarize} />
+          <SettingSwitch label="共用麦克风" description="多人共用麦克风时开启，配合自动区分，识别现场不同的说话人。" enabled={Boolean(snap.sharedMicrophone)} save={window.earshot.setSharedMicrophone} />
           <AutoTitleSetting enabled={Boolean(snap.autoTitle)} save={window.earshot.setAutoTitle} /></div>
-          <p className="settings-caption">录制选项从下一次录制生效；关闭自动命名会立即停止生成。</p>
+          <p className="settings-caption">录制选项从下一次录制生效；关闭自动标题会立即停止生成。</p>
         </section>
         <section className="settings-section" aria-labelledby="cloud-heading"><h3 id="cloud-heading">云端服务</h3>
         <div className="set-card">
@@ -724,7 +722,7 @@ function SettingsPane({
         </div>
         <p className="settings-caption">密钥保存在本机，费用由你的百炼账户结算。</p>
         </section>
-        <UsageSettings load={window.earshot.usageSummary} openBilling={() => void window.earshot.openBilling()} />
+        <UsageSettings load={window.earshot.usageSummary} openBilling={window.earshot.openBilling} />
         <section className="settings-section" aria-labelledby="permission-heading"><h3 id="permission-heading">系统权限</h3>
         <div className="set-card">
           <div className="set-row">
@@ -815,6 +813,8 @@ function SessionPane({
   onRetry: (job: "refined" | "speakers") => void;
   onCancel: () => void;
 }) {
+  const [revealError, setRevealError] = useState<string | null>(null);
+  useEffect(() => setRevealError(null), [summary?.id, exportNotice]);
   if (!summary) return <div className="col" />;
 
   const jobs = detail?.jobs ?? summary.jobs;
@@ -844,7 +844,7 @@ function SessionPane({
             type="button"
             className={`btn ghost play${playing ? " on" : ""}`}
             title={playbackBlocked ? "录制中无法回听，以免录入播放的声音" : playing ? "暂停回听" : "播放录音"}
-            aria-label={playing ? "暂停回听" : "播放"}
+            aria-label={playing ? "暂停回听" : "播放录音"}
             aria-pressed={playing}
             disabled={playbackBlocked || summary.status === "recording"}
             onClick={() => (playing ? onPause() : onPlay(summary.id))}
@@ -855,13 +855,13 @@ function SessionPane({
       </div>
       {exportNotice ? <p className="export-notice" role="status">{exportNotice.text}{exportNotice.saved ? <><span className="export-path">{exportNotice.saved.path}</span><button type="button" className="btn ghost" onClick={async () => {
         const result = await window.earshot.revealExport(exportNotice.saved!.id).catch(() => ({ ok: false as const, error: "无法打开文件位置" }));
-        if (!result.ok) window.alert(result.error);
-      }}>在访达中显示</button></> : null}</p> : null}
+        setRevealError(result.ok ? null : result.error);
+      }}>在访达中显示</button></> : null}{revealError && <span className="field-err" role="alert">{revealError}</span>}</p> : null}
       {working && jobs.refined !== "canceling" && jobs.speakers !== "canceling" ? (
         <div className="work-bar" aria-live="polite">
           {workBarMessage(jobs)}
           <button type="button" className="btn text" disabled={Boolean(jobPending)} onClick={onCancel}>
-            {jobPending ?? "取消"}
+            {jobPending ?? "取消处理"}
           </button>
         </div>
       ) : null}
@@ -1013,9 +1013,10 @@ function NameUndoNotice({ value, onDismiss, onUndone }: { value: NameUndo; onDis
   const inFlight = useRef(false), active = useRef(true);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   useEffect(() => {
+    if (busy || error) return;
     const timer = setTimeout(onDismiss, Math.max(0, value.expiresAt - Date.now()));
     return () => clearTimeout(timer);
-  }, [value.expiresAt, onDismiss]);
+  }, [value.expiresAt, onDismiss, busy, error]);
   async function undo() {
     if (inFlight.current) return;
     inFlight.current = true; setBusy(true); setError(null);
@@ -1028,7 +1029,7 @@ function NameUndoNotice({ value, onDismiss, onUndone }: { value: NameUndo; onDis
     finally { inFlight.current = false; if (active.current) setBusy(false); }
   }
   return <div className="name-undo"><p role="status">{error ?? `已将本场 ${value.count} 段发言命名为「${value.to}」`}</p>
-    <button type="button" className="btn ghost" disabled={busy} onClick={() => void undo()}>{busy ? "撤销中…" : "撤销"}</button></div>;
+    <button type="button" className="btn ghost" disabled={busy} onClick={() => void undo()}>{busy ? "撤销中…" : "撤销"}</button>{error && <button type="button" className="btn text" onClick={onDismiss}>关闭提示</button>}</div>;
 }
 
 function DictationDetail({ detail, editingBlocked, actionError }: { detail: SessionDetail; editingBlocked: boolean; actionError: string | null }) {

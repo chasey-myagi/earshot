@@ -19,10 +19,10 @@ const snap={hasApiKey:true,autoDiarize:true,permissions:{microphone:'granted',sc
 
 test('actual turn markup distinguishes manual single-turn speaker correction from cluster rename',()=>{
   const html=render('Turns',{turns:[turn],sessionId:detail.id,editable:true,variant:'library',onRename(){}});
-  assert.match(html,/赵敏/);assert.match(html,/修改 00:12 这一段/);assert.match(html,/已修改 · 编辑/);
+  assert.match(html,/赵敏/);assert.match(html,/修改 00:12 这一段/);assert.match(html,/已修改/);
   assert.doesNotMatch(html,/修改这位说话人的整组发言名称/);
   const grouped=render('Turns',{turns:[{...turn,track:'other',speaker:'王明',correction:{...turn.correction,speakerOverridden:false}}],sessionId:detail.id,editable:true,variant:'library',onRename(){}});
-  assert.match(grouped,/整组改名/);assert.match(grouped,/修改 00:12 这一段/);
+  assert.match(grouped,/修改这位说话人的整组发言名称/);assert.match(grouped,/修改 00:12 这一段/);
 });
 
 test('actual editor provides labelled text/speaker fields, persisted undo and original source disclosure',()=>{

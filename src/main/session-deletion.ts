@@ -47,7 +47,9 @@ export function createSessionDeletion(opts: {
   async function remove(raw: unknown): Promise<ActionResult> {
     if (!validId(raw)) return { ok: false, error: '找不到这场会' };
     const id = raw;
-    if (closed || busy.has(id) || notices.has(id)) return { ok: false, error: '这场会正在处理删除' };
+    if (closed) return { ok: false, error: 'Earshot 正在退出，请重新打开后再删除' };
+    if (busy.has(id)) return { ok: false, error: '正在删除这场会话，请稍候' };
+    if (notices.has(id)) return { ok: false, error: '这场会话已删除，可在底部提示中撤销' };
     const doc = opts.store.readSession(id);
     if (!doc) return { ok: false, error: '找不到这场会' };
     if (opts.active(id) || doc.status === 'recording') return { ok: false, error: '请先停止录制并保存' };

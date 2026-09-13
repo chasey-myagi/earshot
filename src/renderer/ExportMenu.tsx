@@ -1,10 +1,12 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ExportFormat } from '../shared/types';
+import { usePresence } from './usePresence';
 
 export function ExportMenu({ disabled, reason, exporting, onExport }: {
   disabled: boolean; reason: string; exporting: ExportFormat | null; onExport: (format: ExportFormat) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const presence = usePresence(open);
   const box = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const id = useId();
@@ -18,7 +20,7 @@ export function ExportMenu({ disabled, reason, exporting, onExport }: {
   },[open]);
   useEffect(() => { if(disabled || exporting) setOpen(false); },[disabled,exporting]);
   return <div className="export-menu" ref={box} onKeyDown={event => {
-    if(event.key === 'Escape' && open) { event.preventDefault();close(true); }
+    if(event.key === 'Escape' && open) { event.preventDefault();event.stopPropagation();close(true); }
     if(event.key === 'Tab' && open) close(true);
     if(!open || !['ArrowDown','ArrowUp','Home','End'].includes(event.key)) return;
     event.preventDefault();
@@ -32,7 +34,7 @@ export function ExportMenu({ disabled, reason, exporting, onExport }: {
       onKeyDown={event => {if(!open && ['ArrowDown','ArrowUp'].includes(event.key)){event.preventDefault();setOpen(true);}}}>
       {exporting ? '导出中…' : '导出'}
     </button>
-    {open && <div className="export-options" id={id} role="menu" aria-label="导出文件格式">
+    {presence.present && <div className={`export-options t-dropdown ${presence.className}`} data-origin="top-right" inert={!open} aria-hidden={!open} id={id} role="menu" aria-label="导出文件格式">
       <button type="button" role="menuitem" onClick={() => {close(true);onExport('txt');}}>纯文本 TXT</button>
       <button type="button" role="menuitem" onClick={() => {close(true);onExport('json');}}>结构化 JSON</button>
     </div>}

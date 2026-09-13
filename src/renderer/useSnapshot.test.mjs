@@ -7,7 +7,7 @@ import ts from 'typescript';
 import { shareSnapshotTurns } from './snapshotPick.ts';
 
 test('library receives saved shortcuts, permission changes and deletion undo through the real snapshot hook', async () => {
-  let rendered, changed, raw = { hasApiKey: true, sessions: [], recording: null, selected: null,
+  let rendered = {snap:null,error:null}, changed, unavailable = false, raw = { hasApiKey: true, sessions: [], recording: null, selected: null,
     shortcuts: { prefs: {enabled:true,meeting:'Control+Alt+R',dictation:'Command+Shift+D',delivery:'preview'}, accessibility:false,holdAvailable:true },
     dictation: {phase:'result',text:'保留的输入'}, deletions: [],
   };
@@ -18,15 +18,21 @@ test('library receives saved shortcuts, permission changes and deletion undo thr
   };
   runInNewContext(ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,
     {module,exports:module.exports,require: id => id === 'react' ? react : {shareSnapshotTurns},
-      window:{addEventListener(){},removeEventListener(){},earshot:{snapshot:async()=>structuredClone(raw),onChange:fn=>{changed=fn;return()=>{};}}}, requestAnimationFrame: fn=>fn()},
+      window:{addEventListener(){},removeEventListener(){},earshot:{snapshot:async()=>{if(unavailable)throw Error('offline');return structuredClone(raw);},onChange:fn=>{changed=fn;return()=>{};}}}, requestAnimationFrame: fn=>fn()},
     {filename:fileURLToPath(new URL('./useSnapshot.ts',import.meta.url))});
-  module.exports.useSnapshot(); effects.forEach(fn=>fn());
+  const hook = module.exports.useSnapshot(); effects.forEach(fn=>fn());
   await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(rendered.shortcuts?.prefs.dictation,'Command+Shift+D');
-  assert.equal(rendered.shortcuts?.prefs.delivery,'preview');
-  assert.equal(rendered.dictation?.text,'保留的输入');
+  assert.equal(rendered.snap.shortcuts?.prefs.dictation,'Command+Shift+D');
+  assert.equal(rendered.snap.shortcuts?.prefs.delivery,'preview');
+  assert.equal(rendered.snap.dictation?.text,'保留的输入');
   raw = {...raw, shortcuts:{...raw.shortcuts,accessibility:true}, deletions:[{sessionId:'deleted',title:'测试会话'}]};
   changed(); await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(rendered.shortcuts.accessibility,true);
-  assert.equal(rendered.deletions[0].sessionId,'deleted');
+  assert.equal(rendered.snap.shortcuts.accessibility,true);
+  assert.equal(rendered.snap.deletions[0].sessionId,'deleted');
+  // A failed refresh keeps the usable document and exposes a retryable error.
+  unavailable = true; await hook.refresh();
+  assert.equal(rendered.snap.deletions[0].sessionId,'deleted');
+  assert.match(rendered.error, /重试/);
+  unavailable = false; await hook.refresh();
+  assert.equal(rendered.error, null);
 });
