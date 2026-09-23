@@ -1218,3 +1218,5 @@ button:disabled { cursor: not-allowed; }
 .share-menu-divider { height: 1px; margin: 4px 5px; background: var(--line); }
 .share-error { position: absolute; top: 100%; right: 0; z-index: 19; width: max-content; max-width: 260px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--layer); color: var(--danger); font-size: var(--text-ui); }
 @media (max-width: 700px) { .sess-head { flex-wrap: wrap; } .sess-head > .grow { flex-basis: 100%; } .sess-actions { margin-left: auto; } }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
