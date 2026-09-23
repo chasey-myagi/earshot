@@ -1203,3 +1203,18 @@ button:disabled { cursor: not-allowed; }
 .action-control { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
 .action-control .field-err { max-width: 28ch; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .prep-intro { margin: 0 0 24px; color: var(--muted); font-size: 13px; }
+
+.session-sharing { position: relative; display: flex; align-items: center; gap: 4px; }
+.copy-agent { min-width: 130px; gap: 7px; }
+.copy-agent svg, .more-actions svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.copy-agent .t-icon { display: flex; }
+.copy-agent .t-icon[data-icon="b"] { color: var(--ok); }
+.more-actions { width: 30px; padding-inline: 6px; }
+.more-actions svg { fill: currentColor; }
+.share-menu { position: absolute; z-index: 20; top: calc(100% + 8px); right: 0; width: 180px; padding: 5px; background: var(--layer); border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 8px 24px #0003; }
+.share-menu button { display: block; width: 100%; text-align: left; border: 0; border-radius: 5px; padding: 9px 10px; background: transparent; color: var(--text); font: inherit; font-size: var(--text-ui); cursor: pointer; }
+.share-menu button:hover:not(:disabled), .share-menu button:focus-visible { background: var(--raise); }
+.share-menu button:disabled { color: var(--muted); opacity: .5; cursor: default; }
+.share-menu-divider { height: 1px; margin: 4px 5px; background: var(--line); }
+.share-error { position: absolute; top: 100%; right: 0; z-index: 19; width: max-content; max-width: 260px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--layer); color: var(--danger); font-size: var(--text-ui); }
+@media (max-width: 700px) { .sess-head { flex-wrap: wrap; } .sess-head > .grow { flex-basis: 100%; } .sess-actions { margin-left: auto; } }

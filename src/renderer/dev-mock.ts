@@ -497,6 +497,7 @@ export function installDevMock(): void {
     },
     revealSession: async () => previewOnly("打开本机录音目录"),
     revealExport: async () => previewOnly("显示导出文件"),
+    copyTranscript: async () => ({ ok: false, error: "请在 Earshot 应用中复制" }),
     exportTranscript: async () => ({ ok: false, error: "请在 Earshot 应用中导出" }),
     onChange: (fn: () => void) => {
       listeners.add(fn);

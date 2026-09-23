@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { app, BrowserWindow, dialog, ipcMain, protocol, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, protocol, shell, systemPreferences } from "electron";
 
 app.setName("Earshot");
 protocol.registerSchemesAsPrivileged([{ scheme: "earshot-audio", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
@@ -47,6 +47,7 @@ import { isSessionId, createSessionStore, type SessionStore } from "./store/sess
 import { assembleSnapshot } from "./store/snapshot";
 import { sessionHasWavBody } from "./store/wav";
 import { createSpeakerNames } from "./speaker-names";
+import { copyTranscript } from "./share";
 import { exportTranscript } from "./export";
 import { createGlanceWindow } from "./windows/glance";
 import { loadRenderer } from "./windows/load";
@@ -497,6 +498,9 @@ function registerIpc(): void {
     catch { return { ok: false, error: "无法打开文件位置，请在 Finder 中查找" }; }
   });
   let exportPending = false;
+  ipcMain.handle("app:copyTranscript", (_event, raw: unknown): ActionResult =>
+    copyTranscript(store, raw, (text) => clipboard.writeText(text)));
+
   ipcMain.handle("app:exportTranscript", async (event, raw: unknown): Promise<ExportTranscriptResult> => {
     if (exportPending) return { ok: false, error: "请先完成当前导出" };
     exportPending = true;

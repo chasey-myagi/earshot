@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { join } from "node:path";
 import type { ActionResult, JobStatus, RenameSpeakerInput, SessionDetail, SessionJobs, SessionSummary } from "../../shared/types";
 import type { Prefs, SessionDocument } from "./schema";
+import { refreshSharedTranscript } from "../share.ts";
 import { sessionTranscript } from "./transcript.ts";
 import { changeBookmark, changeTurn, readBookmarks, readCorrectedTurns, searchDetails } from "./transcript-tools.ts";
 import type { TranscriptSearchResult } from "../../shared/transcript-tools";
@@ -232,6 +233,7 @@ export function createSessionStore(rootDir: string) {
     writeJson(sessionFile(doc.id), doc);
     forgetListed();
     forgetDetails(doc.id);
+    refreshSharedTranscript(sessionDir(doc.id), () => getDetail(doc.id));
   }
 
   function readSession(id: string): SessionDocument | null {
@@ -310,7 +312,10 @@ export function createSessionStore(rootDir: string) {
     const doc = readSession(id);
     if (!doc) return { ok: false, error: "找不到这场会" };
     const result = changeTurn(transcriptSource(doc), raw, action);
-    if (result.ok) forgetDetails(id);
+    if (result.ok) {
+      forgetDetails(id);
+      refreshSharedTranscript(sessionDir(id), () => getDetail(id));
+    }
     return result;
   }
 
@@ -521,6 +526,7 @@ export function createSessionStore(rootDir: string) {
     if (!readSession(id)) throw new Error("Session not found");
     writeJson(namesFile(id), { schema_version: 2, artifact: namesArtifact(id), names });
     forgetDetails(id);
+    refreshSharedTranscript(sessionDir(id), () => getDetail(id));
   }
 
   function rememberPerson(name: string): void {

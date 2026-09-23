@@ -1,7 +1,8 @@
+import { clock, transcriptDocument } from "./transcript-document.ts";
 import { randomUUID } from "node:crypto";
 import { lstat, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import type { ExportFormat, ExportTranscriptInput, ExportTranscriptResult, SessionDetail } from "../shared/types";
+import type { ExportFormat, ExportTranscriptInput, ExportTranscriptResult } from "../shared/types";
 import type { SessionStore } from "./store/sessions.ts";
 
 type ChoosePath = (filename: string, format: ExportFormat) => Promise<string | null>;
@@ -20,27 +21,6 @@ function filename(title: string, format: ExportFormat): string {
   return `${[...clean].slice(0, 60).join("").trim() || "转录文本"}.${format}`;
 }
 
-function clock(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  return [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
-    .map((part) => String(part).padStart(2, "0")).join(":");
-}
-
-function document(detail: SessionDetail) {
-  const { id, title, startedAt, endedAt, durationSec, status } = detail;
-  return {
-    schema_version: 1,
-    session: { id, title, startedAt, endedAt, durationSec, status },
-    turns: detail.turns.filter((turn) => !turn.partial && turn.text.trim()).map((turn) => ({
-      id: turn.id,
-      track: turn.track,
-      speaker: turn.correction?.speakerOverridden ? turn.speaker : turn.track === "you" ? "你" : turn.speaker || "对方",
-      tStartMs: turn.tStartMs,
-      ...(turn.tEndMs === undefined ? {} : { tEndMs: turn.tEndMs }),
-      text: turn.text,
-    })),
-  };
-}
 
 function within(root: string, path: string): boolean {
   return path === root || path.startsWith(`${root}${sep}`);
@@ -84,7 +64,7 @@ export async function exportTranscript(
     const detail = store.getDetail(raw.sessionId);
     if (!detail) return { ok: false, error: "找不到这场会" };
     if (detail.status === "recording") return { ok: false, error: "停止录音后即可导出" };
-    const doc = document(detail);
+    const doc = transcriptDocument(detail);
     if (!doc.turns.length) return { ok: false, error: "还没有可导出的转录文本" };
     // Serialize before the dialog: a background job may publish a new draft while it is open.
     const content = raw.format === "json" ? `${JSON.stringify(doc, null, 2)}\n`

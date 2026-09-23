@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   ActionResult,
+  CopyTranscriptInput,
   AppSnapshot,
   EarshotApi,
   ExportTranscriptInput,
@@ -84,6 +85,8 @@ contextBridge.exposeInMainWorld("earshot", {
   undoDeleteSession: (id: string): Promise<ActionResult> => ipcRenderer.invoke("app:undoDeleteSession", id),
   revealSession: (id: string): Promise<ActionResult> => ipcRenderer.invoke("app:revealSession", id),
   revealExport: (id: string): Promise<ActionResult> => ipcRenderer.invoke("app:revealExport", id),
+  copyTranscript: (input: CopyTranscriptInput): Promise<ActionResult> =>
+    ipcRenderer.invoke("app:copyTranscript", input),
   exportTranscript: (input: ExportTranscriptInput): Promise<ExportTranscriptResult> =>
     ipcRenderer.invoke("app:exportTranscript", input),
   onChange: (fn: () => void): (() => void) => {

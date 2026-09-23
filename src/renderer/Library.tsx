@@ -20,7 +20,7 @@ import { TranscriptView, type ReadingPositions } from "./TranscriptView";
 import { RecordingClock, RealtimeNotice, StopRecording } from "./RecordingControls";
 import { NameEditor } from "./NameEditor";
 import { SessionTitle } from "./SessionTitle";
-import { ExportMenu } from "./ExportMenu";
+import { SessionSharing } from "./SessionSharing";
 import { PlaybackBar } from "./PlaybackBar";
 import { DictationPermission, DictationSettings } from "./Dictation";
 import { DeletionNotices } from "./SessionRow";
@@ -839,7 +839,6 @@ function SessionPane({
           </p>
         </div>
         <div className="sess-actions">
-          <ExportMenu disabled={!canExport} reason={exportWhy} exporting={exporting} onExport={onExport} />
           <button
             type="button"
             className={`btn ghost play${playing ? " on" : ""}`}
@@ -851,6 +850,8 @@ function SessionPane({
           >
             {playing ? <PauseIcon /> : <PlayIcon />}
           </button>
+          <SessionSharing key={summary.id} sessionId={summary.id} available={canExport}
+            why={exportWhy.replaceAll("导出", "复制或导出")} exporting={exporting} onExport={onExport} />
         </div>
       </div>
       {exportNotice ? <p className="export-notice" role="status">{exportNotice.text}{exportNotice.saved ? <><span className="export-path">{exportNotice.saved.path}</span><button type="button" className="btn ghost" onClick={async () => {

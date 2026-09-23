@@ -119,6 +119,8 @@ export type SaveKeyResult = { ok: true } | { ok: false; error: string };
 export type ActionCode = "no_key" | "no_mic" | "no_screen" | "busy";
 export type ActionResult = { ok: true } | { ok: false; error: string; code?: ActionCode };
 
+export type CopyTranscriptInput = { sessionId: string; kind: "agent" | "text" };
+
 export type ExportFormat = "json" | "txt";
 export type ExportTranscriptInput = { sessionId: string; format: ExportFormat };
 export type ExportTranscriptResult = { ok: true; canceled: boolean; saved?: { path: string; id: string } } | { ok: false; error: string };
@@ -198,6 +200,7 @@ export type EarshotApi = {
   playbackHost: (ready: boolean) => Promise<void>;
   reportPlayback: (report: PlaybackReport) => void;
   onPlaybackCommand: (fn: (command: PlaybackCommand) => void) => () => void;
+  copyTranscript: (input: CopyTranscriptInput) => Promise<ActionResult>;
   exportTranscript: (input: ExportTranscriptInput) => Promise<ExportTranscriptResult>;
   revealExport: (id: string) => Promise<ActionResult>;
   onChange: (fn: () => void) => () => void;
