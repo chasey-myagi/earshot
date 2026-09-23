@@ -4,7 +4,7 @@ import type { UsagePeriod, UsageSummary } from '../shared/usage';
 import './provider-settings.css';
 
 const names: Record<string, string> = { 'fun-asr': '录音文件转写', 'fun-asr-realtime': '录中实时转写',
-  'qwen-audio-3.0-asr-flash-streaming': 'Qwen Audio 3.0 语音输入', 'qwen3-asr-flash-realtime': 'Qwen3 ASR 语音输入',
+  'qwen-audio-3.1-asr-flash-streaming': 'Qwen Audio 3.1 语音输入', 'qwen-audio-3.0-asr-flash-streaming': 'Qwen Audio 3.0 语音输入', 'qwen3-asr-flash-realtime': 'Qwen3 ASR 语音输入',
   'qwen3.8-flash': 'Qwen3.8 Flash 文字整理', 'qwen3.7-flash': 'Qwen3.7 Flash 文字整理', 'qwen3.7-plus': 'Qwen3.7 Plus 文字整理', 'qwen-flash': 'Qwen Flash 录音标题' };
 const money = (amount: number) => amount > 0 && amount < 0.01 ? '< ¥0.01' : `¥${amount.toFixed(2)}`;
 const duration = (seconds: number) => seconds >= 3600 ? `${(seconds / 3600).toFixed(1)} 小时` : seconds >= 60 ? `${(seconds / 60).toFixed(1)} 分钟` : `${Math.round(seconds)} 秒`;

@@ -90,7 +90,7 @@ appData/Earshot/
 
 默认按住 `Alt+Space`，录会默认 `Control+Alt+R`，由 `src/shared/dictation.ts` 定义。设置持久化与快捷键注册失败需要回滚，录制快捷键可独立于语音输入启用状态存在。
 
-识别选项以 `src/shared/model-settings.ts` 为准。默认 Qwen Audio 3.0 ASR 流式识别，润色关闭。ASR、润色、存储及插入失败应保留可恢复的文字；取消后不能让迟到结果写入其他目标。
+识别选项以 `src/shared/model-settings.ts` 为准。默认 Qwen Audio 3.1 ASR 流式识别（3.0 仍可选），润色关闭。ASR、润色、存储及插入失败应保留可恢复的文字；取消后不能让迟到结果写入其他目标。
 
 `macos.ts` 用现有 koffi 延迟加载系统框架，读取指定按键状态、捕获目标并发送一次 Cmd+V。`input-target.ts` 在可读取时核对原文、选区和实际结果；已知目标变化时拒写，不可核验时保留结果供用户检查。
 

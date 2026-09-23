@@ -153,6 +153,7 @@ export function installDevMock(): void {
     words: empty ? [] : ['矩阵起源', 'MatrixOne', 'Earshot'], updatedAt: null, sync: empty ? 'empty' : 'pending',
     message: '仅为界面预览，未读取本机词表或连接百炼。',
     models: [
+      { model: 'qwen-audio-3.1-asr-flash-streaming', label: 'Qwen Audio 3.1 语音输入', supported: true, ready: false },
       { model: 'qwen-audio-3.0-asr-flash-streaming', label: 'Qwen Audio 3.0 语音输入', supported: true, ready: false },
       { model: 'fun-asr', label: '录音文件转写', supported: true, ready: false },
       { model: 'fun-asr-realtime', label: '录中实时转写', supported: true, ready: false },

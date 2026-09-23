@@ -39,6 +39,7 @@ export function createHotwordStore(path: string, getApiKey: () => string | null,
       sync: failure ? 'error' : !saved.words.length ? 'empty' : allReady ? 'ready' : 'pending',
       ...(failure ? { message: failure } : {}),
       models: [
+        { model: 'qwen-audio-3.1-asr-flash-streaming', label: 'Qwen Audio 3.1 语音输入', supported: true, ready: true },
         { model: 'qwen-audio-3.0-asr-flash-streaming', label: 'Qwen Audio 3.0 语音输入', supported: true, ready: true },
         { model: 'fun-asr', label: '录音文件转写', supported: true, ready: !saved.words.length || isReady('fun-asr') },
         { model: 'fun-asr-realtime', label: '录中实时转写', supported: true, ready: !saved.words.length || isReady('fun-asr-realtime') },
@@ -88,7 +89,7 @@ export function createHotwordStore(path: string, getApiKey: () => string | null,
         if (deployed.status !== 'OK' || deployed.target_model !== model) throw new Error();
         saved.cloud[model]!.ready = true;
         writeJson(path, saved);
-      } catch { failure = '热词已保存在本机，录音热词尚未全部同步；可重试同步。Qwen Audio 3.0 仍可使用本机词表。'; }
+      } catch { failure = '热词已保存在本机，录音热词尚未全部同步；可重试同步。Qwen Audio 语音输入仍可使用本机词表。'; }
     }
     return status();
   }
@@ -108,7 +109,7 @@ export function createHotwordStore(path: string, getApiKey: () => string | null,
     sync: () => enqueue(syncNow),
     parameters(model: string, requestKey: string | null = getApiKey()): HotwordParameters {
       if (!saved.words.length) return {};
-      if (model === 'qwen-audio-3.0-asr-flash-streaming') return { vocabulary: Object.fromEntries(saved.words.map(word => [word, 4])) };
+      if (model.startsWith('qwen-audio-')) return { vocabulary: Object.fromEntries(saved.words.map(word => [word, 4])) };
       if (MODELS.includes(model as typeof MODELS[number]) && isReady(model as typeof MODELS[number], requestKey)) return { vocabulary_id: saved.cloud[model as typeof MODELS[number]]!.id };
       return {};
     },

@@ -10,7 +10,7 @@ export const BALANCE_SOURCE = 'https://help.aliyun.com/zh/user-center/bill-view'
 const RETENTION_DAYS = 366, MAX_EVENTS = 10_000;
 const ASR_PRICES: Record<string, number> = { 'fun-asr': 0.00022, 'fun-asr-realtime': 0.00033,
   'qwen-audio-3.0-asr-flash-streaming': 0.00033, 'qwen3-asr-flash-realtime': 0.00033 };
-const MODELS = [...Object.keys(ASR_PRICES), 'qwen3.8-flash', 'qwen3.7-flash', 'qwen3.7-plus', 'qwen-flash'];
+const MODELS = [...Object.keys(ASR_PRICES), 'qwen-audio-3.1-asr-flash-streaming', 'qwen3.8-flash', 'qwen3.7-flash', 'qwen3.7-plus', 'qwen-flash'];
 const positive = (value: unknown, cap: number) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= cap ? value : undefined;
 
 /** Only documented response fields; never infer token counts from text length. */

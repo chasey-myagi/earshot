@@ -116,7 +116,7 @@ export function DictationSettings({ status }: { status?: ShortcutStatus }) {
     <div className="set-row"><div>自动填入<p className="why">说完填入原输入框，不会发送。关闭后可手动复制。</p></div>
       <button type="button" className={`knob${draft.delivery === 'direct' ? ' on' : ''}`} role="switch" aria-label="自动填入" aria-checked={draft.delivery === 'direct'}
         disabled={busy || !draft.enabled} onClick={() => void save({ ...draft, delivery: draft.delivery === 'direct' ? 'preview' : 'direct' })} /></div>
-    <div className="set-row"><div>语音识别模型<p className="why">按录音时长计费，{DICTATION_MODELS.find(model => model.id === models.asr)?.price}。</p></div>
+    <div className="set-row"><div>语音识别模型<p className="why">{DICTATION_MODELS.find(model => model.id === models.asr)?.price}。</p></div>
       <select aria-label="语音识别模型" value={models.asr} disabled={busy || !draft.enabled} onChange={event => void save({ ...draft, models: { ...models, asr: event.target.value as ModelPrefs['asr'] } })}>
         {DICTATION_MODELS.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
       </select></div>
