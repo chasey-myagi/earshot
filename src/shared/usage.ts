@@ -6,10 +6,13 @@ export type UsageEvent = {
   measurement: 'provider' | 'local';
   outcome?: 'succeeded' | 'uncertain';
 };
+export type UsageRecord = Omit<UsageEvent, 'outcome'> & { outcome: 'succeeded' | 'uncertain'; estimatedCny: number | null };
 export type UsageSummary = {
   period: UsagePeriod; since: number; updatedAt: number; trackingSince: number;
   requests: number; audioSeconds: number; inputTokens: number; outputTokens: number;
   estimatedCny: number; unpricedRequests: number; localMeasuredRequests: number; unconfirmedRequests: number;
+  /** Requests in the period, newest first. */
+  records: UsageRecord[];
   rows: { model: string; requests: number; audioSeconds: number; inputTokens: number; outputTokens: number; estimatedCny: number; unpricedRequests: number }[];
   actualBilling: 'unavailable'; balanceCny: null; billingReason: string;
   pricingDate: string; retentionDays: number; capped: boolean; error?: string;

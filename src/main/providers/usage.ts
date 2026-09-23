@@ -120,6 +120,7 @@ export function createUsageLedger(path: string, now: () => number = Date.now) {
       estimatedCny: rows.reduce((sum, row) => sum + row.estimatedCny, 0), unpricedRequests: rows.reduce((sum, row) => sum + row.unpricedRequests, 0),
       localMeasuredRequests: selected.filter(row => row.measurement === 'local').length,
       unconfirmedRequests: selected.filter(row => row.outcome === 'uncertain').length,
+      records: selected.map(event => ({ ...event, outcome: event.outcome ?? 'succeeded', estimatedCny: estimateCny(event) })).reverse(),
       rows, actualBilling: 'unavailable', balanceCny: null,
       billingReason: '当前 DashScope API Key 仅用于模型调用。账单和账户余额查询需要阿里云财务 OpenAPI 的独立身份与权限，无法用此 Key 读取。',
       pricingDate: PRICING_DATE, retentionDays: RETENTION_DAYS, capped, ...(error ? { error } : {}) };

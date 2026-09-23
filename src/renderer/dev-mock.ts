@@ -311,11 +311,23 @@ export function installDevMock(): void {
     syncHotwords: async () => ({ ...structuredClone(hotwords), sync: 'error', message: '浏览器预览无法同步云端热词，请在 Earshot 应用中操作。' }),
     usageSummary: async (period = 'month') => {
       const now = Date.now(), sample = scenario === 'usage';
+      const kinds = [
+        { model: 'qwen-audio-3.1-asr-flash-streaming', kind: 'dictation-asr' as const, audioSeconds: 14, estimatedCny: null },
+        { model: 'fun-asr', kind: 'file-asr' as const, audioSeconds: 2460, estimatedCny: 0.5412 },
+        { model: 'qwen-flash', kind: 'session-title' as const, inputTokens: 820, outputTokens: 24, estimatedCny: 0.000159 },
+      ];
+      const records = sample ? Array.from({ length: 26 }, (_, i) => ({ id: `sample-${i}`, at: now - i * 47 * 60_000, measurement: 'provider' as const,
+        outcome: i === 0 ? 'uncertain' as const : 'succeeded' as const, ...kinds[i % kinds.length] })) : [];
+      const rows = kinds.map(({ model }) => {
+        const mine = records.filter(row => row.model === model);
+        return { model, requests: mine.length, audioSeconds: mine.reduce((sum, row) => sum + (row.audioSeconds ?? 0), 0), inputTokens: mine.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0),
+          outputTokens: mine.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0), estimatedCny: mine.reduce((sum, row) => sum + (row.estimatedCny ?? 0), 0), unpricedRequests: mine.filter(row => row.estimatedCny === null).length };
+      }).filter(row => row.requests);
+      const total = (key: 'requests' | 'audioSeconds' | 'inputTokens' | 'outputTokens' | 'estimatedCny' | 'unpricedRequests') => rows.reduce((sum, row) => sum + row[key], 0);
       return { period, since: now - dayMs * (period === 'today' ? 1 : 30), updatedAt: now, trackingSince: now - dayMs * 30,
-        requests: sample ? 12 : 0, audioSeconds: sample ? 3600 : 0, inputTokens: 0, outputTokens: 0,
-        estimatedCny: sample ? 1.19 : 0, unpricedRequests: 0, localMeasuredRequests: 0, unconfirmedRequests: 0,
-        rows: sample ? [{ model: 'qwen-audio-3.0-asr-flash-streaming', requests: 12, audioSeconds: 3600, inputTokens: 0, outputTokens: 0, estimatedCny: 1.19, unpricedRequests: 0 }] : [],
-        actualBilling: 'unavailable', balanceCny: null,
+        requests: total('requests'), audioSeconds: total('audioSeconds'), inputTokens: total('inputTokens'), outputTokens: total('outputTokens'),
+        estimatedCny: total('estimatedCny'), unpricedRequests: total('unpricedRequests'), localMeasuredRequests: 0, unconfirmedRequests: sample ? 1 : 0,
+        records, rows, actualBilling: 'unavailable', balanceCny: null,
         billingReason: sample ? '界面预览：以上为虚构示例数据，不是实际用量、费用或账户余额。请在 Earshot 应用中查看本机记录。' : '浏览器预览未读取任何真实用量或账户余额；请在 Earshot 应用中查看本机记录。',
         pricingDate: '预览示例', retentionDays: 366, capped: false };
     },

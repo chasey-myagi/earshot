@@ -1,6 +1,6 @@
 import { ActionButton } from './ActionButton';
 import { useEffect, useRef, useState } from 'react';
-import type { UsagePeriod, UsageSummary } from '../shared/usage';
+import type { UsagePeriod, UsageRecord, UsageSummary } from '../shared/usage';
 import './provider-settings.css';
 
 const names: Record<string, string> = { 'fun-asr': '录音文件转写', 'fun-asr-realtime': '录中实时转写',
@@ -8,6 +8,23 @@ const names: Record<string, string> = { 'fun-asr': '录音文件转写', 'fun-as
   'qwen3.8-flash': 'Qwen3.8 Flash 文字整理', 'qwen3.7-flash': 'Qwen3.7 Flash 文字整理', 'qwen3.7-plus': 'Qwen3.7 Plus 文字整理', 'qwen-flash': 'Qwen Flash 录音标题' };
 const money = (amount: number) => amount > 0 && amount < 0.01 ? '< ¥0.01' : `¥${amount.toFixed(2)}`;
 const duration = (seconds: number) => seconds >= 3600 ? `${(seconds / 3600).toFixed(1)} 小时` : seconds >= 60 ? `${(seconds / 60).toFixed(1)} 分钟` : `${Math.round(seconds)} 秒`;
+const when = (at: number) => new Date(at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+const RECORD_PAGE = 20;
+
+function UsageRecords({ records }: { records: UsageRecord[] }) {
+  const [shown, setShown] = useState(RECORD_PAGE);
+  return <div className="usage-records"><h4 id="usage-records-heading">请求记录</h4>
+    <div className="usage-table-wrap"><table className="usage-table" aria-labelledby="usage-records-heading">
+      <thead><tr><th scope="col">时间</th><th scope="col">模型用途</th><th scope="col">用量</th><th scope="col">估算</th></tr></thead>
+      <tbody>{records.slice(0, shown).map(row => <tr key={row.id}>
+        <td>{when(row.at)}</td>
+        <th scope="row">{names[row.model] ?? row.model}</th>
+        <td>{row.audioSeconds !== undefined ? duration(row.audioSeconds) : `${(row.inputTokens ?? 0).toLocaleString()} 入 / ${(row.outputTokens ?? 0).toLocaleString()} 出 Token`}{row.measurement === 'local' ? <small>本机计时</small> : null}</td>
+        <td>{row.estimatedCny === null ? '未计价' : money(row.estimatedCny)}{row.outcome === 'uncertain' ? <small>未确认完成</small> : null}</td></tr>)}</tbody>
+    </table></div>
+    {records.length > shown ? <button type="button" className="field-link usage-more" onClick={() => setShown(value => value + RECORD_PAGE)}>显示更多（还有 {(records.length - shown).toLocaleString()} 条）</button> : null}
+  </div>;
+}
 
 export function UsageSettings({ load, openBilling }: { load: (period: UsagePeriod) => Promise<UsageSummary>; openBilling: () => void }) {
   const [period, setPeriod] = useState<UsagePeriod>('month');
@@ -42,6 +59,7 @@ export function UsageSettings({ load, openBilling }: { load: (period: UsagePerio
             <td>{row.audioSeconds ? duration(row.audioSeconds) : `${row.inputTokens.toLocaleString()} 入 / ${row.outputTokens.toLocaleString()} 出 Token`}</td>
             <td>{row.unpricedRequests === row.requests ? '—' : money(row.estimatedCny)}{row.unpricedRequests ? <small>{row.unpricedRequests} 次未计价</small> : null}</td></tr>)}</tbody>
         </table></div> : <p className="settings-caption">所选时段暂无用量记录。</p>}
+        {summary.records.length ? <UsageRecords key={period} records={summary.records} /> : null}
         {summary.error ? <p className="field-err" role="alert">{summary.error}</p> : null}
         {summary.unconfirmedRequests > 0 ? <p className="settings-caption">{summary.unconfirmedRequests} 次请求未收到完成确认，估算费用不代表实际扣费。</p> : null}
         <details className="settings-caption settings-note usage-details"><summary>统计说明</summary>

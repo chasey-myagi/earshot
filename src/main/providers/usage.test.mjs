@@ -93,3 +93,16 @@ test('event cap and duplicate persisted ids cannot inflate reported totals', t =
   writeFileSync(path, JSON.stringify({ version: 1, trackingSince: now, events: [events[0], events[0]] }));
   assert.match(createUsageLedger(path, () => now).summary().error, /无法读取/);
 });
+test('summary lists each request in the period newest first with its own estimate', t => {
+  const ledger = createUsageLedger(fixture(t), () => now);
+  ledger.record({ ...base, id: 'old', at: now - 40 * 86_400_000 });
+  ledger.record({ ...base, id: 'file', at: now - 60_000, audioSeconds: 60 });
+  ledger.record({ id: 'dictation', at: now - 1000, model: 'qwen-audio-3.1-asr-flash-streaming', kind: 'dictation-asr', measurement: 'local', outcome: 'uncertain', audioSeconds: 12 });
+  const { records } = ledger.summary('month');
+  assert.deepEqual(records.map(row => [row.at, row.kind, row.model, row.estimatedCny]), [
+    [now - 1000, 'dictation-asr', 'qwen-audio-3.1-asr-flash-streaming', null],
+    [now - 60_000, 'file-asr', 'fun-asr', 0.0132],
+  ]);
+  assert.equal(records[0].audioSeconds, 12); assert.equal(records[0].outcome, 'uncertain'); assert.equal(records[0].measurement, 'local');
+  assert.equal(ledger.summary('all').records.length, 3);
+});
